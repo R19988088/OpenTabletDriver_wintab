@@ -1,0 +1,179 @@
+# OTD Wintab 模式调试记录（2026-11-14）
+
+## 一、已解决：OTD 探测不到板子的两个配置错误
+
+设备：`USB\VID_056A&PID_0357`（Wacom Intuos Pro M / PTH-660）
+
+用 HidSharp（OTD 实际用的库，`hidsharpcore 1.3.0`）枚举到的真实值：
+
+| 集合 | InputReportLength | OutputReportLength | Feature | CanOpen |
+|---|---|---|---|---|
+| `mi_00&col02`（厂商 0xff00:10，笔数据） | **193** | **161** | 1024 | True |
+| `mi_00&col03`（笔，Windows Ink） | 38 | 0 | 2 | **False（被内核独占）** |
+| `mi_00&col04`（键盘） | 38 | 0 | 0 | True |
+| `mi_02&col02`（辅助键） | 44 | 161 | 1024 | True |
+
+内置配置 `PTH-660.json` 里 digitizer 写的是 `InputReportLength: 192` + `OutputReportLength: 0`，
+而 OTD 的匹配逻辑是严格相等（`Driver.cs:180-181`），两项都对不上 → `No tablets were detected.`
+
+**修正后**（外部覆盖文件：`portable-build\userdata\Configurations\Wacom\PTH-660.json`）：
+
+- `InputReportLength: 193`
+- 删除 `OutputReportLength: 0`（留空即不参与匹配）
+- `FeatureReportLength: 1024` + 把 `FeatureInitReport` 的 `AgI=` 补零到 1024 字节
+
+结果：日志出现 `Found tablet 'Wacom PTH-660'`、`Wacom PTH-660 :: Pressure: Enabled`，
+共享缓冲区 `maxP` 由 8191 变为 **32767**（插件按 shim 要求配置成功）。
+
+## 二、未解决：拿到设备但收不到笔数据
+
+日志：`Failed to set device feature: 02-02`（Level 2 警告）。
+用 HidSharp 直接对 `col02` 试 SetFeature，各种长度（2 / 161 / 162 / 1024）全部失败；`Write` 全部报“参数错误”。
+
+推断：Wacom 的内核过滤驱动仍在设备栈上——它既独占着笔集合 `col03`（err=32），
+也拦掉了厂商集合上的特性/输出报文。设备因此一直停留在 Windows Ink 模式，
+不会把笔数据发到 `col02`，OTD 也就发布不出 Wintab 包（`writeIndex` 恒为 0）。
+
+**结论**：这条路线必须先禁用/卸载 Wacom 驱动（设备管理器操作，需要管理员权限），
+普通权限下命令行（`sc stop` / `pnputil` / Device Manager）全部 Access denied。
+
+## 三、当前可用状态
+
+- SAI / PS 目录里的 `Wintab32.dll` 已换回官方 Wacom 版（`CA27BE97AD`，2.3MB，Wacom Technology 签名）。
+- 关掉 Wacom 用户态进程（`Wacom_TabletUser`）后，笔走 Windows Ink，SAI 自动切到 Ink 通道，压感正常。
+- 我们的 shim 作为 `Wintab32.shim-z65.dll` 保留在同目录，插件 `42F4CF3E` 已部署到
+  `%LOCALAPPDATA%\OpenTabletDriver\Plugins`。
+
+## 四、拿到管理员权限后的下一步（按顺序）
+
+1. 设备管理器禁用 `Wacom Tablet`（或卸载 Wacom 驱动），让出 `col03` 与 `col02` 报文通道。
+2. 重启 `OpenTabletDriver.Daemon.exe`（工作目录 `portable-build`），确认日志有 `Found tablet`。
+3. 用笔在板子上划，观察缓冲区是否推进：
+   `python otdcheck2.py`（读 `Local\OpenTabletDriverWintab` 头 32 字节的 `writeIndex`）。
+4. 把 `Wintab32.shim-z65.dll` 复制回 `Wintab32.dll`（SAI / PS 目录），重启应用验证压感 0–32767 与单击。
+5. 若第 3 步仍不动，再看日志里 `Failed to set device feature` 是否消失；
+   消失但无包 → 问题在 IntuosV2 解析/发布路径，可直接改
+   `src\OpenTabletDriver-0.6.x\OpenTabletDriver.Wintab\WintabPointer.cs`。
+
+## 2026-11-14 晚：压力为什么到不了 SAI / PS
+
+**已证实（数据在案）**
+- shim 报文本身正确：SAI 上下文 `pkt_data=0x15E2`、`width=36`、`pressure_at=20`，包里实测 `np=5653`，峰值 `11317`，`misses=0`。与官方 `official-15E2.txt` 的字节布局逐字段一致。
+- 强制满压（`force-pressure.txt`）时 SAI 收到 `np=32767` 240 个包，画面仍无任何压力反应 → **SAI 不消费 Wintab 的 pkNormalPressure**。
+- 因此 SAI / PS 的压力来自系统指针（笔设备），与 Wintab 无关；Wacom 驱动在位时系统里有真笔，所以它们有压力。ProCraft 是纯 Wintab 消费者，一直正常。
+
+**系统笔（合成笔）路线**
+- `CreateSyntheticPointerDevice(PT_PEN)` + `InjectSyntheticPointerInput` 能让 `GetPointerDevices` 从 0 变 1（type=1 Integrated Pen），指针确实进入系统。
+- 但实测有严重副作用：光标在“笔位置”和左上角之间高频往返；笔杆键被误触发（`POINTER_PEN_INFO` 少写 `penFlags` 字段导致 `penMask` 被当成 flag，bit0=PEN_FLAG_BARREL→右键）。
+- 已修正 `penFlags`、已补 himetric 坐标、已关闭 POINTER_FEEDBACK 动画、已降到 60Hz：**闪烁仍未消除**。
+- 结论：合成笔方案在当前实现下不可用，暂时关闭。独立进程 `pen_injector.exe`（`src/bin/pen_injector.rs`）保留备用，由 `inject-pen-exe.txt` 开关控制。
+
+**当前开关状态（全部关闭）**
+- `%LOCALAPPDATA%\OTDWintab\` 下 `force-pressure.txt` / `zero-xy.txt` / `pen-only.txt` / `inject-pen.txt` / `inject-pen-exe.txt` 均已删除。
+- 桌面指针恢复为 OTD 鼠标注入（`WintabPointer` 的 pen-only 开关为关）。
+- shim 已装 z71（`C4D1638E4D`，173568B）到 SAI 与 PS 目录；插件为 `3B07629DE3`（含 pen-only 文件开关）。
+
+**可选下一步**
+1. 继续调合成笔（需要解决光标双位置，可能要试 `ptHimetricLocation` 映射与 `POINTER_FLAG_NEW`）。
+2. 回滚：`pnputil /add-driver "E:\000 app\OpenTabletDriver\driver-backup\wachidrouter_pro.inf" /install`，恢复 Wacom 驱动 → SAI/PS 立刻恢复压感，但 OTD 无法再读板子。
+## 2026-11-14 晚：PS 切窗口回来只能画一个点 —— 根因是队列积压
+
+现象：切到别的窗口再切回 PS，笔能点出一个点，但移动不出线；在手感面板上划几笔后 PS 又自行恢复。
+
+定位（靠 z74 新增的每秒 `gets=` 计数分出方向）：
+- 出问题时 PS 仍在高频取包（正常 185 次/秒），说明不是"我们不投递"；
+- 同一秒出现过 `samples=349 / msgs=11`：生产了 349 个包只发了 11 条 WT_PACKET 通知——旧通知逻辑"只在队列里还积着包时"才发，而 PS 取包太快、两次通知之间就把队列取空，通知线程于是永远不发；
+- 队列上限当时是 `MAX_QUEUE = 256`，200Hz 下等于 1.3 秒旧历史，PS 恢复时把整段旧坐标一次性回放，画面就只剩一个点。
+
+z75：通知改为"只要生产了新包就发 WT_PACKET"，不再依赖队列是否积压。
+z77（最终）：不再排队——新样本到达时，若队列里还有**没被取走**的包，直接丢弃替换成最新（`queue.truncate(read)`），队列最多只有一个待取包；`MAX_QUEUE = 16` 仅作已交付包的历史，供 `WTPacket(serial)` 回查。
+
+结果：ProCraft 正常；PS 切窗口回来可连续画线，不再只出一个点。SAI 2 仍无压力输出，暂时搁置。
+## 2026-11-14 晚：显示映射"只在上面那块屏"的根因 —— EnableClipping 被改成了 false
+
+- 现象：笔的坐标只在上面那块显示器（\\.\DISPLAY2，Windows y 为负）能控，下面那块（DISPLAY1，主屏 0..3840/0..2160）不动。OTD 界面里显示区域看起来是对的，daemon 日志也自证 Display area: [3840x2160@<1920,1080>]。
+- 误判过程：曾据"光标读数 Y 为负"推断 OTD 的显示区 Y 与 Windows 屏幕坐标反向，手写过 3269x2160@(1920,1080) 和 Y=-1080 两种坐标——都被否决，且都不是病因。教训：光标位置不能证明映射方向（笔不在感应区时它停着不动），不要据此反推。
+- 真正根因：把 11-13 的旧配置与本轮对拍，两份 settings.json 只有一行不同——
+  "EnableClipping": false（本轮被我改坏）vs true（11-13 原始值）；
+  其余 Display/Tablet/LockAspectRatio/LockUsableArea* 全部一致。
+- 结论：EnableClipping=true 时 OTD 把板子映射覆盖整块显示区（上下两块屏都能命中）；关掉后只剩上面那块响应。改回 true 后恢复正常。
+- 恢复方式：直接用 E:\000 app\OpenTabletDriver\userdata\settings.json（11-13 原版，3031B）覆盖 portable-build\userdata\settings.json；被覆盖的那份留在 backup\settings-before-clipping-fix.json。
+- 验证口径：看 daemon 最新日志最后几条 "Clipping: Enabled"（注意日志是追加的，要取最后几次而不是第一次出现）。
+## 2026-11-14 夜：z78 —— 切走窗口期间不再按 250Hz 空发 WT_PACKET
+
+- 症状：切到别的窗口待一会儿再回 PS，PS 不认笔（或压力只剩一次单击 100%）。
+- 现场证据（wintab-Photoshop-23824.log 尾部）：一个 93 秒的空窗里 shim 只产生 4 个样本，PS 却 get 了 18248 次；队列本身健康（q=0/0、misses=0）。所以积压不在 shim 队列里。
+- 推断：真正的积压在应用的**消息队列**——我们的通知线程无论应用有没有在取包，都按 4ms tick 发 WT_PACKET。窗口切到后台时它的消息循环被挂住，消息照收不处理，于是堆到几百上千条；等它回来逐条问 WTPacket(serial)，而这边队列早已被 truncate 换成最新包，绝大多数 serial 查不到，PS 拿到的是空/旧状态，表现为"不认笔、只剩一下"。
+- z78 改法（消费者感知的通知节流）：
+  - Context 新增 last_consume_ms / last_notify_ms / suppressed_posts；
+  - WTPacket 与 WTPacketsGet 每次调用刷新 last_consume_ms（这就是"应用真的在取包"的唯一可靠证据）；
+  - 通知线程：距上次取包 > CONSUMER_IDLE_MS(400ms) 视为应用不在，此时 WT_PACKET 最多每 CONSUMER_AWAY_INTERVAL_MS(200ms) 发一条（心跳，保证它回来能立刻知道有新数据），不再 250/s；正常在用时仍然按 4ms tick 发。
+  - PEAK 行新增 supp= 计数，直接看有多少条被节流掉。
+- 部署：h 446B2C1437 / 196608B，三处（SAI2 目录、PS CC 2019 目录、System32）已替换，旧 z77 留在各自目录的 Wintab32.z77-loaded.dll。
+- 验证口径：PS 重启后切走 → 回来，看日志 supp= 有非零、q=0/0、misses 基本为 0，笔画可继续。
+## 2026-11-14 夜：z79 —— 补上"笔已离开"的 proximity 超时（真正卡"回来不认"的那一环）
+
+- z78 上线后实测：PS 日志 build=20261114-z78，但 supp=0（节流从未触发）。原因：PS 即使切到后台也一直调用 WTPacketsGet（空转时 gets 能到 19052/秒），所以"消费者不在"这个判据对 PS 不成立。z78 的节流保留（对只靠消息的应用有用），但它不是 PS 的病根。
+- 真正的病根（z79 修的就是它）：数位板只在状态变化时上报，笔离开板子/静止不动时**根本没有样本进来**，于是 context.pen.in_range 一直停留在最后一次的 true，我们也就永远不会给应用发"笔离开感应区"的报文（TPS_PROXIMITY + WT_PROXIMITY out）。
+  - 结果：PS 一直认为笔还在板上、甚至还在按下状态。切到别的窗口再回来，它把接下来的一下当成"同一次交互的继续"，于是不产生新笔画；压力用的是记忆里的那个值，看起来就是"只能点出一个 100% 的点"。
+  - 日志佐证：z78 那段里 93231937→93236687 有 ≈4.7 秒只有 1 个样本，其间没有任何 status=TPS_PROXIMITY 的包发出。
+- z79 改法：Context 增 last_sample_ms；refresh() 在"本次没有新样本"且距上次样本 > PROXIMITY_TIMEOUT_MS(1000ms) 时，强制 in_range=false、压力清零、按键清零、changed 标记 PK_STATUS|PK_BUTTONS|PK_NORMAL_PRESSURE，随后由已有的离场分支发一个 TPS_PROXIMITY 包，通知线程再补 WT_PROXIMITY(out)。笔再进来时是全新的一轮：WT_PROXIMITY(in) → WT_CSRCHANGE → WT_PACKET，PS 才会重新绑定压力能力。
+- 部署：h 4B187FB189 / 197120B，三处已替换（旧 z78 留在各自目录 Wintab32.z78-loaded.dll；z77 的 Wintab32.z77-loaded.dll 仍保留）。
+- 验证口径：画→切走 10~30 秒→回来再画；日志里应能看到一次 status=2048(TPS_PROXIMITY) 的包 + 之后重新出现的 WT_PROXIMITY/CSRCHANGE，且笔画能接着画。
+## 2026-11-15：z80 —— 去掉通知线程与取包线程的锁打架（"偶尔堵一下"的根因）
+
+- z79 实测结果：焦点丢失（切窗口回来只出一个点）已消失，但出现"偶尔堵住、慢一下"，不频繁。
+- 结构上的原因：通知线程每 4ms tick 对每个 context 调一次 refresh()，而 refresh 会 poll_shared_all（读共享环 + 逐个 serialize），**全程持有 registry 全局锁**。PS 绘画时每秒进同一个锁几万次（gets 可到 2 万+/秒），两边在互斥量上轮流等待，于是偶尔出现可见的停顿。
+- z80 改法：
+  - 通知线程：距该 context 上次取包 < 10ms（说明应用自己正在取包）时**不再调 refresh、不碰共享环**；只有"应用不来取"（纯消息驱动）才由通知线程代劳。
+  - CONSUMER_IDLE_MS 400 → 1200（应用短暂忙一下不再被误判为"不在"，避免落到 5Hz 心跳）。
+  - proximity 超时 1000 → 1200ms；按下状态单独放宽到 PROXIMITY_TIMEOUT_PRESSED_MS=3000ms——笔按住不动时同样没有样本，若按 1.2s 超时会把正在画的笔画切断。
+- 部署：h 5DBCF95BE0 / 197120B，三处已替换；旧 z79 留作 Wintab32.z79-loaded.dll。
+- 注意：System32 那份被 procraft（pid 12668）加载着，要重启它才吃到 z80。
+## 手感面板已并入 OTD 界面（2026-11-14 夜）
+
+- 源码：`OpenTabletDriver.UX\Controls\FeelGroup.cs`（Eto 版 FeelGroup / DragNumber / CalibrationPad / FeelConfig / TabletShared），`ControlPanel.cs` 把「手感」作为**第一个** TabPage 插入，`OnProfileChanged` 里设置 `feelGroup.TabletName`。
+- 数值框：左右拖拽（6px 一步）、点左半边 -1 / 右半边 +1、滚轮 ±1；写回 `%LOCALAPPDATA%\OTDWintab\feel.json`（字段与独立面板完全相同，shim 每秒热读）。
+- 校准：CalibrationPad 用 20ms `System.Threading.Timer` 读共享内存 `Local\OpenTabletDriverWintab`，取松手前 100ms 峰值存为 MaxPressure；「保留峰值」显示 `MaxPressure*100%`。
+- 编译：`dotnet build OpenTabletDriver.UX.Wpf\OpenTabletDriver.UX.Wpf.csproj -c Release`，0 error。
+- **发布（关键）**：portable-build 的 UX 是 `PublishSingleFile` 单文件，散拷 dll 无效，必须
+  `dotnet publish OpenTabletDriver.UX.Wpf\OpenTabletDriver.UX.Wpf.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:DebugType=none -o E:\000 app\OpenTabletDriver\dist-feel`
+  产物 158MB `OpenTabletDriver.UX.Wpf.exe` + 5 个散放原生库。
+- **坑**：新 exe 配旧 `*_cor3.dll` 会在启动瞬间炸 `System.EntryPointNotFoundException: WpfGfx_SetDisableBoundsCheckProtection`（KERNELBASE 0xe0434352）。发布时必须把 dist-feel 里的 `wpfgfx_cor3.dll` / `PresentationNative_cor3.dll` / `PenImc_cor3.dll` / `D3DCompiler_47_cor3.dll` / `vcruntime140_cor3.dll` 一并覆盖到 portable-build。
+- 备份（旧 exe + 旧原生库）：`backup\20261115-ux-before-feel\`。
+
+## daemon 吃满 14.7GB 与日志降噪（2026-11-14 夜）
+
+- 现象：daemon 工作集 14766MB（机器 24GB 只剩 432MB），随后 OTD 界面崩（`c0000005`）、系统 OOM、板子“连不上”。
+- 根因链：部署的 `Plugins\OpenTabletDriver.Wintab\OpenTabletDriver.Wintab.dll`（11-14 15:09 那个调试构建）每报告写 `POINTER getter: native=True` / `READ called`，每秒几十到上百行；`LogFile` 用的是 `Channel.CreateUnbounded` + 每条 `FlushAsync`，写入任务追不上就无限堆队列；`Write()` 还是 `while(!TryWrite)` 死循环。
+- 修法（两处）：
+  - 插件：用当前源码重建（源码里没有这些逐事件日志），已覆盖部署，旧 DLL 备份为 `.bak-20261115-debug`。
+  - `OpenTabletDriver.Daemon\LogFile.cs`：队列改 `Channel.CreateBounded(2048, DropOldest)`，`Write()` 只放行 `>= LogLevel.Warning`（Debug/Info 直接丢弃），不再 busy-loop。
+- 重发布：`dotnet publish OpenTabletDriver.Daemon\OpenTabletDriver.Daemon.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:DebugType=none -o E:\000 app\OpenTabletDriver\dist-daemon` → 72MB 单文件，备份在 `backup\20261115-daemon-before-logfilter\`。
+- 结果：日志从 82KB/105s 降到 833B 全程；daemon 内存 81MB 稳定不涨。
+- 代价：日志不再记录 Info（`Found tablet`、`Display area`、`Clipping` 这些查映射时要用的行也没了）。要临时排查映射，得把 `Write()` 里的 `if (message.Level < LogLevel.Warning) return;` 注释掉重编。
+- 旧日志目录 `portable-build\userdata\Logs` 仍有约 1.6GB 历史文件（`MAX_LOG_FILES=20` 只限个数不限大小），未删除。
+
+## 界面收尾：清理、安装按钮、关闭到托盘（2026-11-14 深夜）
+
+- 清理：`portable-build\userdata\Logs` 原有 20 个文件 5673MB，只留最新那个（`13_58_15Z`），现总量 1KB 级。
+- 不再给应用单独放 DLL：`D:\app\art  sai 2\Wintab32.dll` 已删（备份 `backup\20261115-app-local-wintab\`）；PS 目录那份因 Photoshop 正在运行被占用未删，等 PS 关闭后再删即可。现在唯一来源是 `C:\Windows\System32\Wintab32.dll`（z80 `5DBCF95BE0`）。
+- `portable-build\WintabNative\Wintab32.dll` 之前是旧构建（166400B `CED02D585A`），已换成 z80（197120B `5DBCF95BE0`），旧文件备份为 `.bak-20261115`，安装按钮就从这里取源。
+- 新按钮：`MainForm` 里 `installWintabButton`「安装 Wintab 到系统」，放在底部 `CommandsControl` 最左（`Save`/`Apply` 之前）。实现是 `Start-Process cmd.exe /c copy /y` + `Verb="runas"` 提权复制 `WintabNative\Wintab32.dll` 到 `%WINDIR%\System32`，完成后比对文件大小给出「安装完成/失败」提示。
+- 关闭行为：`MainForm.OnClosing` 在 `App.EnableTrayIcon && !allowClose` 时取消关闭并 `WindowState = Minimized`（既有处理会把窗口藏起来并从任务栏移除）；真正退出走 `MainForm.Quit()`（设 `allowClose` 后 `Application.Instance.Quit()`）。`TrayIcon` 菜单项由 "Close" 改为 "Quit" 并调用 `window.Quit()`；File 菜单的 Quit 也都改走 `Quit()`。
+- 验证：`CloseMainWindow()` 后进程仍存活、`MainWindowHandle=0`（已藏进托盘）。
+
+## 模式下拉取代安装按钮（2026-11-15）
+
+- 底部 `CommandsControl` 现在是 `模式` 标签 + `modeSelector`（Windows Ink / WinTab）+ Save + Apply，安装按钮已删除。
+- 选择 WinTab 时先比对 `System32\Wintab32.dll` 与 `WintabNative\Wintab32.dll` 的长度：一致就直接切；缺失或版本不同就弹「要不要装」的确认，确认后用 `cmd /c copy /y` 提权复制，成功后切到 winTab 并提示重启应用，失败则退回选择。
+- 选择结果写到 `%LOCALAPPDATA%\OTDWintab\feel.json` 的 `InputMode`（`winInk` / `winTab`），shim 每秒热读；`FeelConfig` 的代码默认值改为 `winInk`（新装默认不需要驱动）。
+- `FeelGroup` 里原来的「输入模式」单选框组已删除，模式只有一个来源（底部下拉）。
+- 注意：`InputMode` 只决定 shim 是否做死区/弹性/压力放大；OTD 自己的输出模式仍在「输出」页（当前是 `OpenTabletDriver.Wintab.WintabOutputMode`）。选 Ink 时手感处理不生效，压力走原始值。
+
+## 模式成为唯一开关 + Ink 下禁用手感页
+
+- `OutputModeEditor` 底部那个输出模式下拉已移除（"输出"页只剩模式编辑器），窗口底部的 `模式` 是唯一开关。
+- `FeelGroup.SetModeEnabled(bool)`：Ink 时把死区/弹性/笔触稳定三个滑块禁用、校准区 `pad.Enabled=false`（同时从 CompositionScheduler 注销，不再轮询），顶部显示提示「Windows Ink 模式没有手感处理…」。
+- `MainForm.ApplyInputMode` 写完 `feel.json` 后调 `SyncFeelAvailability`；启动时按已存模式同步一次。
+- 事实：这版 OTD 没有 Windows Ink 输出插件（`OutputModeEditor` 白名单里的 "Windows Pen Pointer" 没有对应类型），所以 Ink 不可能脱离 Wintab 链路；Ink 的实际效果是「shim 直通原始压力，不做手感处理」，笔和原始压感仍在。

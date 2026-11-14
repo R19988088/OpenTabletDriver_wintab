@@ -1,0 +1,10 @@
+# build / publishing leftovers
+bin/Debug/
+bin/Release/
+obj/
+dist/
+*.user
+*.bak*
+*.bak-*
+*.pdb
+*.zip

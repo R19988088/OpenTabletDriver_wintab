@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>OpenTabletDriver.Wintab</AssemblyName>
+    <RootNamespace>OpenTabletDriver.Wintab</RootNamespace>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTabletDriver.Plugin\OpenTabletDriver.Plugin.csproj" Private="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Consumed by the plugin manager; shipped next to the plugin dll. -->
+    <None Include="metadata.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
