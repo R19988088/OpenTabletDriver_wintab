@@ -80,10 +80,13 @@ namespace OpenTabletDriver.UX.Wpf
                 return;
             }
 
-            if (!dryRun && !IsElevated() && MessageBoxW(IntPtr.Zero,
-                    "OpenTabletDriver 需要把 Wintab32.dll 放进系统目录，否则绘画软件拿不到压感。\r\n\r\n" +
-                    "待写入：\r\n" + pending + "\r\n" +
-                    "现在安装吗？会弹出一次管理员确认，旧文件备份在本目录 WintabBackup。\r\n" +
+            // When nothing is installed yet there is nothing to lose, so the UAC prompt is consent
+            // enough: one click on 允许 and the DLLs are in place. Only replacing an already present
+            // but different Wintab32.dll (usually the vendor one) asks first.
+            var replacingExisting = File.Exists(target64) || File.Exists(target32);
+            if (!dryRun && replacingExisting && !IsElevated() && MessageBoxW(IntPtr.Zero,
+                    "系统目录里已经有 Wintab32.dll，但和随包版本不一致：\r\n\r\n" + pending + "\r\n" +
+                    "要换成随包版本吗？原来的文件会备份到本目录 WintabBackup。\r\n" +
                     "选「否」就不再询问（以后可右键 install-wintab.bat 手动装）。",
                     "安装 Wintab32.dll", MB_YESNO | MB_ICONQUESTION) != IDYES)
             {
@@ -95,7 +98,19 @@ namespace OpenTabletDriver.UX.Wpf
             var log = RunInstaller(baseDirectory, source64, source32, target64, target32, dryRun);
             if (log == null)
             {
-                Note("wintab install: elevated installer did not run (UAC cancelled?)");
+                // The UAC prompt itself was answered with 否, which is a refusal.
+                SetDeclined(true);
+                Note("wintab install: UAC cancelled by user");
+
+                if (!dryRun)
+                {
+                    MessageBoxW(IntPtr.Zero,
+                        "没有安装 Wintab32.dll（取消了管理员授权）。\r\n\r\n" +
+                        "装好之前 Wintab 模式用不了。想装的话重启本程序、在授权弹窗点「允许」，" +
+                        "或者右键 install-wintab.bat 手动安装。",
+                        "未安装 Wintab32.dll", MB_ICONWARNING);
+                }
+
                 return;
             }
 

@@ -395,3 +395,17 @@ System.ArgumentNullException: Value cannot be null. (Parameter 'path1')
 沙箱两份哈希前缀 `7F0621EAE5F46DBB`（197120B）与 `D1B9F20F7BA205A0`（176640B），与系统里现有的一致。
 
 注意：干跑只证明「检测差异 → 生成脚本 → 复制 → 备份 → 复核」这条链路；真正写 System32 需要 UAC 确认，写入逻辑与之前手工验证过的 `replace-wintab-system32.ps1` 相同。另外，本机系统 DLL 已是最新时不会弹任何框，所以「装到真 System32」这次没有在真机上重跑一遍（避免覆盖掉正在用的 shim）。
+
+
+### 为什么不给整个面板加「以管理员身份运行」
+
+`WintabInstall.cs` 改成：系统里根本没有 Wintab32.dll 时，不再先弹自己的询问框，直接发起 UAC——授权弹窗本身就是同意，点一次「允许」就装完。只有系统里已经存在一个不一样版本的 Wintab32.dll 时才先问一句（那个多半是 Wacom 装的，换掉前留个确认，旧文件照样备份到 WintabBackup）。UAC 被点「否」则记 `WintabInstallDeclined=1` 并提示一次，之后不再打扰（重启程序或删该值可再装）。
+
+反过来给 `OpenTabletDriver.UX.Wpf.exe` 的清单加 `requireAdministrator` 是条坏路：
+
+- 面板本身不需要管理员：插件目录、userdata 全在当前用户下；OTD 自己也明说以管理员运行时 Plugin Manager 与 Tablet Debugger 会不正常（就是那个「should not be run with administrator privileges」框）。
+- 提权进程收不到普通进程的拖放（装插件、拖 profile 会失效）。
+- 开机自启写在 HKCU 的 Run 下，带管理员清单的 exe 每次登录都会弹一次 UAC，等于把「静默托盘」毁了。
+- 真正需要提权的只有「往 System32 写两个 DLL」这一件事，`ShellExecuteExW(runas)` 单独拉起一次临时脚本正好把提权范围圈死在这一点上。
+
+所以：正常双击（不要右键以管理员身份运行）；需要装 DLL 时只会弹一次授权，点「允许」即可。
