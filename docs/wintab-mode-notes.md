@@ -237,3 +237,40 @@ z77（最终）：不再排队——新样本到达时，若队列里还有**没
 **注意**：exe 只负责「装/不装 + 启动」，不会重装 OTD、不下载任何东西、不动软件目录里的本地 DLL。把它放到别的目录会提示找不到 `OpenTabletDriver.UX.Wpf.exe`。
 
 源码在 `wintab-shim\src\bin\launcher.rs`（同 crate 的第一个 bin，`cargo build --release --bin launcher`）；`Cargo.toml` 为此补了 `Win32_UI_Shell` 与 `Win32_System_Registry` 两个 feature（`SHELLEXECUTEINFOW` 在 windows-sys 0.59 里被 `Win32_System_Registry` 门控，缺了会 `unresolved import`）。
+---
+
+## 控制面板底部栏：开机启动（2026-11-15 晚）
+
+用户在底部栏截图（设备下拉 / 模式=WinTab / 保存 / 应用）上要求「在下面增加一个开机启动 默认勾选」。改的是 `repo-publish\ux-patch\MainForm.cs`（补丁文件，编译前覆盖到 `src\OpenTabletDriver-0.6.x\OpenTabletDriver.UX\MainForm.cs`）。
+
+**行为**
+
+- 勾选框 `开机启动` 加在底部 `TabletSwitcherPanel.CommandsControl` 的横向 StackLayout 里，排在「应用」右边。
+- 首次运行（注册表里没有记录）→ 默认勾上，并且立刻写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，值名 `OpenTabletDriver Wintab`，值 = `"<当前 exe 全路径>"`。默认勾选会真正生效，不只是界面上的样子。
+- 每次启动若仍是勾选状态，会重写一次该值 → 整个目录搬家/改名后路径自动跟着更新（`Environment.ProcessPath`，单文件发布取到的就是 exe 真路径）。
+- 取消勾选 → 删掉 Run 项，并把决定记在 `HKCU\Software\OpenTabletDriver\Wintab\AutoStart`（DWORD 0/1），下次启动不会因为「没有记录」又被默认勾回去。
+- 注册表异常全部 try/catch 吞掉：受限环境里勾选框失效也不会把控制面板带崩。
+
+**验证过**
+
+| 项 | 结果 |
+|---|---|
+| 首次运行（清掉 Run 项与偏好键） | Run 值自动写入，指向当时运行的 exe，偏好键 AutoStart=1 |
+| 从另一个目录启动同一份 exe | Run 值自动改成新目录的路径 |
+| 界面外观 | 截图确认底部栏右端出现勾选状态的「开机启动」 |
+| 启动后平板识别 | 标题 `OpenTabletDriver v0.6.8.1 - Wacom PTH-660` |
+
+未在界面上实际点过一次「取消勾选」（该分支只是 `RegistryKey.DeleteValue`，与写入同一条代码路径的镜像）；要更严的话下次可以拿 UI 自动化点一下。
+
+**编译命令**（用官方 eng 脚本的参数，自包含单文件，产物 ≈165.7 MB，与原来那份同量级）
+
+```powershell
+cd "E:\000 app\OpenTabletDriver\src\OpenTabletDriver-0.6.x"
+dotnet publish OpenTabletDriver.UX.Wpf -c Release -r win-x64 --self-contained true `
+  --output <out> /p:PublishSingleFile=true /p:PublishTrimmed=false `
+  /p:DebugType=embedded --framework net8.0-windows
+```
+
+踩到两个编译错：`CheckBox` 在 Eto 里没有 `VerticalAlignment`（删掉即可）；`RegistryValueKind.Dword` 必须写成 `DWord`。
+
+旧的前端备份在 `backups\OpenTabletDriver.UX.Wpf-20261115-before-autostart.exe`，回滚直接拷回 `portable-build\`（或绿色版目录）即可。

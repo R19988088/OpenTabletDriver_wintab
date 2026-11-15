@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -64,6 +64,24 @@ namespace OpenTabletDriver.UX
                     ApplyInputMode("winInk");
             };
             modeLabel = new Label { Text = "模式", VerticalAlignment = VerticalAlignment.Center };
+
+            // Start-with-Windows sits at the same strip as the mode selector. A fresh
+            // copy ships it checked: nothing works until OTD is running, and a portable
+            // folder is easy to forget after a reboot.
+            autoStartCheck = new CheckBox
+            {
+                Text = "开机启动",
+                Checked = AutoStartPreferenceEnabled()
+            };
+            autoStartCheck.CheckedChanged += (sender, e) =>
+            {
+                ApplyAutoStart(autoStartCheck.Checked ?? false);
+            };
+
+            // Keep the Run entry pointing at wherever this copy lives now: moving or
+            // renaming the folder must not leave a stale path registered.
+            if (autoStartCheck.Checked ?? false)
+                ApplyAutoStart(true);
 
             var inputMode = FeelConfig.Load().InputMode;
             syncingMode = true;
@@ -500,6 +518,7 @@ namespace OpenTabletDriver.UX
                         modeSelector,
                         saveButton,
                         applyButton,
+                        autoStartCheck,
                     }
                 }
             };
@@ -522,6 +541,7 @@ namespace OpenTabletDriver.UX
         private Button applyButton;
         private Label modeLabel;
         private DropDown modeSelector;
+        private CheckBox autoStartCheck;
         private TabletSwitcherPanel tabletSwitcherPanel;
         private bool syncingMode;
 
@@ -1024,6 +1044,58 @@ namespace OpenTabletDriver.UX
 
             App.Driver.Disconnected -= HandleDaemonDisconnected;
             base.OnClosing(e);
+        }
+
+        private const string AutoStartRunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string AutoStartValueName = "OpenTabletDriver Wintab";
+        private const string AutoStartPreferenceKey = @"Software\OpenTabletDriver\Wintab";
+
+        /// <summary>
+        /// The user's decision, defaulting to enabled on a copy that has never been run.
+        /// Writing the Run entry immediately makes that default real rather than cosmetic.
+        /// </summary>
+        private static bool AutoStartPreferenceEnabled()
+        {
+            try
+            {
+                using var preference = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(AutoStartPreferenceKey);
+                if (preference?.GetValue("AutoStart") is int stored)
+                    return stored != 0;
+
+                ApplyAutoStart(true);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void ApplyAutoStart(bool enabled)
+        {
+            try
+            {
+                using var run = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(AutoStartRunKey, true);
+                if (run != null)
+                {
+                    if (enabled)
+                    {
+                        if (Environment.ProcessPath is { Length: > 0 } exe)
+                            run.SetValue(AutoStartValueName, $"\"{exe}\"");
+                    }
+                    else if (run.GetValue(AutoStartValueName) != null)
+                    {
+                        run.DeleteValue(AutoStartValueName, false);
+                    }
+                }
+
+                using var preference = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(AutoStartPreferenceKey);
+                preference?.SetValue("AutoStart", enabled ? 1 : 0, Microsoft.Win32.RegistryValueKind.DWord);
+            }
+            catch
+            {
+                // A locked-down registry must not take the control panel down with it.
+            }
         }
     }
 }
