@@ -318,7 +318,17 @@ namespace OpenTabletDriver.Wintab
             var y = Math.Clamp(tabletY, 0, maxY);
 
             buffer.Publish(x, y, pressure, tiltX, tiltY, rotation, buttonState, inRange);
+
+            // One line the first time a non-zero pressure reaches the ring: separates "the
+            // tablet never pressed" from "the ring got pressure and the shim did not".
+            if (pressure > 0 && !firstPressureLogged)
+            {
+                firstPressureLogged = true;
+                WintabDiag.Write($"FIRST pressure to shm x={x} y={y} p={pressure} buttons=0x{buttonState:X} inRange={inRange}");
+            }
         }
+
+        private static bool firstPressureLogged;
 
         public void Dispose()
         {

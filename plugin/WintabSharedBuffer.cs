@@ -36,12 +36,14 @@ namespace OpenTabletDriver.Wintab
             {
                 // SharedState declares a single inline packet; the ring needs full capacity.
                 var size = PacketBase + (long)RingCapacity * Marshal.SizeOf<SharedPacket>();
+                var reused = true;
                 try
                 {
                     file = MemoryMappedFile.OpenExisting(MappingName, MemoryMappedFileRights.ReadWrite);
                 }
                 catch (FileNotFoundException)
                 {
+                    reused = false;
                     file = MemoryMappedFile.CreateNew(MappingName, size);
                 }
                 view = file.CreateViewAccessor(0, size);
@@ -57,10 +59,15 @@ namespace OpenTabletDriver.Wintab
                 Width = width;
                 Height = height;
                 MaxPressure = maxPressure;
+
+                WintabDiag.Write(
+                    $"SHM created name={MappingName} {width}x{height} maxP={maxPressure} " +
+                    $"size={size} reusedExisting={reused}");
             }
             catch (Exception ex)
             {
                 Log.Write("Wintab", $"Unable to create shared buffer: {ex.Message}", LogLevel.Error);
+                WintabDiag.Write("SHM FAILED", ex);
                 file = null;
                 view = null;
             }
