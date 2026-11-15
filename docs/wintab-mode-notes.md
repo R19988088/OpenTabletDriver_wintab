@@ -177,3 +177,32 @@ z77（最终）：不再排队——新样本到达时，若队列里还有**没
 - `FeelGroup.SetModeEnabled(bool)`：Ink 时把死区/弹性/笔触稳定三个滑块禁用、校准区 `pad.Enabled=false`（同时从 CompositionScheduler 注销，不再轮询），顶部显示提示「Windows Ink 模式没有手感处理…」。
 - `MainForm.ApplyInputMode` 写完 `feel.json` 后调 `SyncFeelAvailability`；启动时按已存模式同步一次。
 - 事实：这版 OTD 没有 Windows Ink 输出插件（`OutputModeEditor` 白名单里的 "Windows Pen Pointer" 没有对应类型），所以 Ink 不可能脱离 Wintab 链路；Ink 的实际效果是「shim 直通原始压力，不做手感处理」，笔和原始压感仍在。
+
+## SAI 在 WinTab 模式下没压感：根因与修复（2026-11-15）
+
+现象：PS、ProCraft 压感正常，PaintTool SAI Ver.2（`D:\app\art  sai 2\sai2.exe`）能画出线但没有压力；用户否决"改用 Windows Ink/指针模式"，要求三个软件都走 Wintab。
+
+定位手段（都在 `wintab-oracle\`）：
+
+- `penstroke.py 1400 900 2000 900 70 14 ramp cursor mouse`：往共享内存喂 60~70 个假样本（`ramp` 线性升压 / `flat` 恒定满压），可选 `cursor`（同步 `SetCursorPos`）、`mouse`（SendInput 按一下左键）、`prox`（先离位再入位）。这是能不动真笔就复现的关键工具。
+- `sai_keys.py`（`new` / `enter` / `keys VK...` / `click x y` / `max`）、`mousedrag.py`（纯鼠标拖一条恒粗线作对照）、`grab.py`（全屏或区域截图）。
+- **坐标必须是物理像素**：脚本进程默认 DPI-unaware，`SetCursorPos` 走逻辑坐标（2194×1234，缩放 1.75），而 Wintab 包走物理坐标（3840×2160）。`SetThreadDpiAwarenessContext(-4)` 直接传 int 会失败，**必须传 `ctypes.c_ssize_t(-4)`**，之后 `GetSystemMetrics` 才返回 3840×2160。
+- 教训：`sai_keys.py max` 是 `ShowWindow(SW_MAXIMIZE)`，窗口已最大化时再调一次会把窗口还原，之后所有面板/画布坐标全变；每次自动化前先截图确认。"油漆桶"被选中时拖拽只会填色，画不出线——先确认工具是笔。
+
+四个依次定位到的根因（前三个都在 `Lib.rs` 的默认 LOGCONTEXT / 队列行为上）：
+
+1. **默认 `WTI_DEFCONTEXT` 的 `sysExt=(0,0)`**。SAI 用 `WTInfo(cat=400)` 取模板再用 `WTGet` 读映射参数，`sysExt` 为 0 时它的屏→画布映射塌成一条线，表现为"喂了包什么都没有"。改成 `GetSystemMetrics(0/1)` 后 SAI 立刻开始出笔画（此时压力仍是 0，已经能看到极细的淡线 + 笔尖光标圈）。
+2. **默认上下文的 `sens=(0,0,0)`、in/outExt 第三分量 `1`、`device=0`** 与官方 `official-x64.txt` 不符（官方 `sens=(65536,65536,65536)`、ext 第三分量 `2047`、`inOrg/outOrg` 第三分量 `-1023`、`device=0xFFFFFFFF`）。按官方逐字段对齐后压力才真正上来。
+   - 注意：`official-x64.txt` 里 `inOrg=(0,0,-1023) inExt=(44800,29600,2047) outOrg=(0,0,-1023) outExt=(44800,29600,2047)`，`sysOrg=(0,0) sysExt=(3840,2160) sysSens=(65536,65536)`。
+3. **Y 轴语义**。Wintab 的设备坐标原点在左下、Y 朝上，我们一直按屏幕习惯发"朝下"的 Y。SAI 老老实实按 Wintab 语义映射，所以上下镜像；PS/ProCraft 用系统光标定位、只从包里取压力，因此从不暴露这个问题。
+   - 结论：**不要在 shim 里按 exe 名做适配**（试过 `host_flips_y()` 按 `sai2.exe` 判断，能用但用户明确否决），而是全局按 Wintab 语义发 Y：`packet_y(y) = device_extent().1 - y`，一处逻辑，所有消费者一致。
+4. **队列长度**。`poll_shared_all()` 末尾原本 `queue.truncate(read)`，只保留最新一包；改"保留历史"（`MAX_QUEUE` 上限）后日志里 `misses` 从大量降到 0，但对 SAI 的压感并无决定性作用，反而因为积了 16~22 个包（≈80ms）让笔明显拖尾。**已验证"保留历史"不是必需**，用户也明确要求不留历史，最终回到 `truncate(read)` 的语义。
+
+延迟（本轮追加）：
+
+- `start_notifier()` 里 `std::thread::sleep(4ms)` 实际睡到 **15.6ms**——Windows 默认计时器精度就是这个值，`thread::sleep` 会被向上取整。笔迹拖尾的主因之一。
+- 修法：`#[link(name="winmm")] timeBeginPeriod(1)`（进程内一次），睡 `2ms`，实际间隔约 2~3ms。
+
+验证证据：SAI 在 WinTab 模式下喂 `ramp` 得到"细→粗"渐变笔画、`flat` 得到等粗粗线；`WTPacket` 日志（`%LOCALAPPDATA%\OTDWintab\wintab-sai2-<pid>.log`）里 `PACK ... np=...` 的 np 数值与喂入值一致。
+
+部署现状（本轮）：SAI 目录和 ProCraft 目录各放了一份新构建的 `Wintab32.dll`（PS 目录是 11-14 的旧版，PS 运行中无法替换）；`System32` 仍是 z80。备份在 `backups\`：`Wintab32-ps-local-20261114.dll`、`Wintab32-system32-z80-20261114.dll`（两者同 SHA256 `5DBCF95B…`）、`Wintab32-20261115-globalflip.dll`、`Wintab32-20261115-latency1ms.dll`。

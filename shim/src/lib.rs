@@ -50,7 +50,6 @@ const PKT_RATE: u32 = 200;
 /// milliseconds ago at most. Keeping 256 (1.3 s at 200 Hz) meant an application
 /// that briefly stopped polling - switching windows is enough - came back to a
 /// backlog of ancient samples and replayed a whole stroke's worth of stale
-/// positions at once, which Photoshop shows as a single dot.
 const MAX_QUEUE: usize = 16;
 
 /// Diagnostics go to a fixed, per-process file instead of the process's current
@@ -94,6 +93,7 @@ fn experiment(name: &str) -> bool {
     static SILENT: AtomicU64 = AtomicU64::new(0);
     static PROX: AtomicU64 = AtomicU64::new(0);
     static SPREAD: AtomicU64 = AtomicU64::new(0);
+    static FLIPY: AtomicU64 = AtomicU64::new(0);
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -113,16 +113,31 @@ fn experiment(name: &str) -> bool {
             u64::from(dir.join("spreadpressure.txt").exists()),
             Ordering::Relaxed,
         );
+        FLIPY.store(
+            u64::from(dir.join("flipy.txt").exists()),
+            Ordering::Relaxed,
+        );
     }
     match name {
         "silent" => SILENT.load(Ordering::Relaxed) != 0,
         "proxstatus" => PROX.load(Ordering::Relaxed) != 0,
-        other => other == "spreadpressure" && SPREAD.load(Ordering::Relaxed) != 0,
+        "spreadpressure" => SPREAD.load(Ordering::Relaxed) != 0,
+        other => other == "flipy" && FLIPY.load(Ordering::Relaxed) != 0,
     }
 }
 
-fn diag(msg: &str) {
-    let Some(path) = diag_file() else { return };
+/// Wintab tablet coordinates run Y *up* from a bottom-left origin, which is the
+/// convention a hardware driver reports; an application that maps the packet
+/// through its context (PaintTool SAI does) draws mirrored if the driver hands
+/// it screen-style top-down Y instead. Consumers that position from the system
+/// cursor and only take pressure from the packet (Photoshop, ProCraft) never see
+/// the difference. So the flip belongs in the one place every application
+/// shares - the serialised packet - and not in a per-application table.
+fn packet_y(pen_y: i32) -> i32 {
+    device_extent().1.saturating_sub(pen_y)
+}
+
+fn diag(msg: &str) {    let Some(path) = diag_file() else { return };
     DIAG_HEADER.get_or_init(|| {
         let exe = std::env::current_exe()
             .map(|p| p.display().to_string())
@@ -774,6 +789,19 @@ fn device_extent() -> (i32, i32) {
     (MAX_X, MAX_Y)
 }
 
+/// Screen extent for the system part of a context. A hardware driver reports the
+/// desktop size here, and consumers such as PaintTool SAI map packet coordinates
+/// through lcSysExt; leaving it zero collapses that mapping.
+fn screen_extent() -> [i32; 2] {
+    let width = unsafe { GetSystemMetrics(0) };
+    let height = unsafe { GetSystemMetrics(1) };
+    if width > 0 && height > 0 {
+        [width, height]
+    } else {
+        [0, 0]
+    }
+}
+
 fn base_context_a() -> LogContextA {
     let (ext_x, ext_y) = device_extent();
     let mut ctx = LogContextA {
@@ -782,22 +810,22 @@ fn base_context_a() -> LogContextA {
         status: 0,
         locks: 0,
         msg_base: 0x7FF0,
-        device: 0,
+        device: 0xFFFF_FFFF,
         pkt_rate: PKT_RATE,
         pkt_data: default_mask(),
         pkt_mode: TPS_NONE,
         move_mask: PK_X | PK_Y | PK_NORMAL_PRESSURE,
         btn_dn_mask: 0,
         btn_up_mask: 0,
-        in_org: [0; 3],
-        in_ext: [ext_x, ext_y, 1],
-        out_org: [0; 3],
-        out_ext: [ext_x, ext_y, 1],
-        sens: [0; 3],
+        in_org: [0, 0, -1023],
+        in_ext: [ext_x, ext_y, 2047],
+        out_org: [0, 0, -1023],
+        out_ext: [ext_x, ext_y, 2047],
+        sens: [65536, 65536, 65536],
         sys_mode: 0,
         sys_org: [0; 2],
-        sys_ext: [0; 2],
-        sys_sens: [0; 2],
+        sys_ext: screen_extent(),
+        sys_sens: [65536, 65536],
     };
     let bytes = b"OpenTabletDriver Pen";
     ctx.name[..bytes.len()].copy_from_slice(bytes);
@@ -812,22 +840,22 @@ fn base_context_w() -> LogContextW {
         status: 0,
         locks: 0,
         msg_base: 0x7FF0,
-        device: 0,
+        device: 0xFFFF_FFFF,
         pkt_rate: PKT_RATE,
         pkt_data: default_mask(),
         pkt_mode: TPS_NONE,
         move_mask: PK_X | PK_Y | PK_NORMAL_PRESSURE,
         btn_dn_mask: 0,
         btn_up_mask: 0,
-        in_org: [0; 3],
-        in_ext: [ext_x, ext_y, 1],
-        out_org: [0; 3],
-        out_ext: [ext_x, ext_y, 1],
-        sens: [0; 3],
+        in_org: [0, 0, -1023],
+        in_ext: [ext_x, ext_y, 2047],
+        out_org: [0, 0, -1023],
+        out_ext: [ext_x, ext_y, 2047],
+        sens: [65536, 65536, 65536],
         sys_mode: 0,
         sys_org: [0; 2],
-        sys_ext: [0; 2],
-        sys_sens: [0; 2],
+        sys_ext: screen_extent(),
+        sys_sens: [65536, 65536],
     };
     let units: Vec<u16> = "OpenTabletDriver Pen".encode_utf16().collect();
     ctx.name[..units.len()].copy_from_slice(&units);
@@ -903,6 +931,16 @@ extern "system" {
     fn GetSystemMetrics(index: i32) -> i32;
 }
 
+// The notifier paces itself with std::thread::sleep, and Windows rounds that up
+// to the current timer resolution - 15.6 ms by default, however short the
+// requested duration is. A real driver answers the pen within a millisecond or
+// two, so the resolution is raised for the lifetime of the process; without it
+// every stroke trails the tip by a whole timer tick.
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(period: u32) -> u32;
+}
+
 struct PenInjectState {
     device: isize,
     tried: bool,
@@ -918,7 +956,7 @@ fn pen_inject_state() -> &'static Mutex<PenInjectState> {
     static STATE: OnceLock<Mutex<PenInjectState>> = OnceLock::new();
     STATE.get_or_init(|| {
         Mutex::new(PenInjectState {
-            device: 0,
+            device: 0xFFFF_FFFF,
             tried: false,
             pressed: false,
             in_range: false,
@@ -1068,12 +1106,16 @@ fn start_notifier() {
         return;
     }
 
+    unsafe { timeBeginPeriod(1) };
+
     std::thread::spawn(|| {
         loop {
-            // 4 ms is 250 Hz: one notifier tick for every packet a 200 Hz tablet
-            // can produce. Polling at 2 ms only let the shim outrun the
-            // application and pile messages on its queue.
-            std::thread::sleep(std::time::Duration::from_millis(4));
+            // 2 ms is 500 Hz: faster than any packet the tablet produces, so a
+            // new sample is announced within about one timer tick. The wait used
+            // to be 4 ms and, with the default 15.6 ms resolution, actually slept
+            // three to four times longer than asked - that alone put the brush
+            // most of a frame behind the tip.
+            std::thread::sleep(std::time::Duration::from_millis(2));
             let now = unsafe { GetTickCount() };
             let targets: Vec<Notif> = {
                 let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
@@ -1646,7 +1688,11 @@ fn serialize(mask: u32, pen: &PenState, context: usize, packet_mode: u32) -> Vec
             PK_CURSOR => put_u32(&mut buf, at, PEN_CURSOR_INDEX),
             PK_BUTTONS => put_u32(&mut buf, at, pen.buttons_for_mode(packet_mode)),
             PK_X => put_i32(&mut buf, at, if zero_xy() { 0 } else { pen.x }),
-            PK_Y => put_i32(&mut buf, at, if zero_xy() { 0 } else { pen.y }),
+            PK_Y => put_i32(
+                &mut buf,
+                at,
+                if zero_xy() { 0 } else { packet_y(pen.y) },
+            ),
             PK_Z => put_i32(&mut buf, at, 0),
             PK_NORMAL_PRESSURE => put_u32(&mut buf, at, pressure),
             PK_TANGENT_PRESSURE => put_u32(&mut buf, at, tangent_pressure),
