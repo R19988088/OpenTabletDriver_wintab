@@ -205,4 +205,4 @@ z77（最终）：不再排队——新样本到达时，若队列里还有**没
 
 验证证据：SAI 在 WinTab 模式下喂 `ramp` 得到"细→粗"渐变笔画、`flat` 得到等粗粗线；`WTPacket` 日志（`%LOCALAPPDATA%\OTDWintab\wintab-sai2-<pid>.log`）里 `PACK ... np=...` 的 np 数值与喂入值一致。
 
-部署现状（本轮）：SAI 目录和 ProCraft 目录各放了一份新构建的 `Wintab32.dll`（PS 目录是 11-14 的旧版，PS 运行中无法替换）；`System32` 仍是 z80。备份在 `backups\`：`Wintab32-ps-local-20261114.dll`、`Wintab32-system32-z80-20261114.dll`（两者同 SHA256 `5DBCF95B…`）、`Wintab32-20261115-globalflip.dll`、`Wintab32-20261115-latency1ms.dll`。
+部署现状（本轮，已统一）：系统里只有一份 shim——`C:\Windows\System32\Wintab32.dll`（x64，SHA256 `7F0621EA…`）和 `C:\Windows\SysWOW64\Wintab32.dll`（i686 同源构建，`D1B9F20F…`）。应用目录里的本地 DLL 全部撤掉：`D:\app\art  sai 2\` 删除，PS 与 ProCraft 目录下的改名为 `Wintab32.dll.bak-doubao-20261115`（进程占用时无法删除，改名即可让它下次启动走系统 DLL）。安装走 `install-wintab.ps1`（提权后把 `portable-build\WintabNative` 里的 x64/x86 分别装进 System32 / SysWOW64，装前自动备份到 `WintabBackup\`）。滚动备份留在 `backups\`：`Wintab32-system32-z80-20261114.dll`、`Wintab32-ps-local-20261114.dll`（同 SHA256 `5DBCF95B…`，即上一版 z80）、`Wintab32-20261115-globalflip.dll`、`Wintab32-20261115-latency1ms.dll`。发布仓库 `repo-publish` 已推送到 GitHub（commit `2b513fd` 起）。

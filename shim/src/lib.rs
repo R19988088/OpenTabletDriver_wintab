@@ -956,7 +956,7 @@ fn pen_inject_state() -> &'static Mutex<PenInjectState> {
     static STATE: OnceLock<Mutex<PenInjectState>> = OnceLock::new();
     STATE.get_or_init(|| {
         Mutex::new(PenInjectState {
-            device: 0xFFFF_FFFF,
+            device: 0,
             tried: false,
             pressed: false,
             in_range: false,
