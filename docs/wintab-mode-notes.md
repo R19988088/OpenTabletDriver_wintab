@@ -274,3 +274,42 @@ dotnet publish OpenTabletDriver.UX.Wpf -c Release -r win-x64 --self-contained tr
 踩到两个编译错：`CheckBox` 在 Eto 里没有 `VerticalAlignment`（删掉即可）；`RegistryValueKind.Dword` 必须写成 `DWord`。
 
 旧的前端备份在 `backups\OpenTabletDriver.UX.Wpf-20261115-before-autostart.exe`，回滚直接拷回 `portable-build\`（或绿色版目录）即可。
+## 启动检测提速：约 6 秒 → 0.9 秒（2026-11-15）
+
+现象：开机后要等 6~7 秒才检测到数位板；日志第一行在 +5.8s 出现，而 found tablet → aux fail 只有约 200ms，说明慢在检测之前。
+
+方法：`OpenTabletDriver.Plugin/StartupTrace.cs`（环境变量 `OTD_TRACE=<文件>` 开启，`Mark(label)` 追加 `+<ms>ms label`），打点位于 Daemon 的 `Program.cs`、`DriverDaemon.cs`，以及 `Devices/RootHub.cs`、`Devices/WinUSB/WinUSBRootHub.cs`、`Devices/HidSharpBackend/HidSharpDeviceRoot.cs`。
+
+修复前的分段表（一次运行）：
+main-enter 28 → build-daemon-start 54 → roothub-ctor-enter 5165 → roothub-enumerated(20) 5166 → driver-resolved 5269 → daemon-ctor 5310 → driverinfo-scan-done 5453 → plugins-loaded 5456 → detect-done 5514。
+
+定位结论：5.07 秒全部在 `WinUSBRootHub` 构造函数里第一个 GUID 的 `EnumerateAllDevicesWithGuid`（标准 WinUSB `{dee824ef-...}`）；第二个 GUID 0ms，HID 枚举只有 17ms。也就是说慢在「枚举到一个 WinUSB 接口后 `new WinUSBInterface(path)` 打开设备读管道」。对照实验（`OTD_DEBUG_SKIP_WINUSB=1` 完全跳过该枚举）把 detect-done 从 5161ms 降到 477ms，证明这段不仅自身慢，还会**拖住 HID 检测**（两者同一时刻结束）。
+
+改动：
+1. `WinUSBRootHub` 不再在构造函数里同步枚举：首次枚举放到工作线程，延迟 `InitialEnumerateDelayMs = 10000` 后执行，结果通过 `DevicesChanged` 上报；热插拔通知（`CM_Register_Notification`）照旧立即枚举，所以后插入的 WinUSB 笔仍能立刻识别。
+2. `RootHub` 构造函数改为「先订阅各 hub 的 DevicesChanged，再 ForceEnumeration」，避免后台枚举恰好在订阅前完成而丢事件。
+3. `DriverDaemon`：`DriverInfo.GetDriverInfos()`（遍历进程与模块）移入 `ReportConflictingDrivers()`，用 `Task.Run` 后台执行，异常吞掉只记日志。
+4. `LoadUserSettings()` 顺序改为 DetectTablets → PluginManager.Clean → LoadPlugins → 读 settings。检测只需设备与配置，插件决定的是报文解析与输出模式，不必排在检测前面。
+5. 控制面板的开机自启改写 `OpenTabletDriver.Daemon.exe` 路径（`AutoStartExecutable()`：同目录存在 daemon 就用它，否则回退自身），不再开机拉 174MB 的 WPF 面板。
+
+结果（三次）：进程创建 → Main 538~560ms（.NET 单文件装载，非本项目代码可控），Main → detect-done 341~357ms，合计 **879~917ms**。阶段表：roothub-enumerated(19) @122ms、detect-done @351ms、冲突驱动扫描后台完成 @426ms、user-settings-loaded @436ms。修复前为 5.5~5.6 秒。
+
+取舍：WinUSB 设备（Zadig / Huion WinUSB）现在在启动约 10 秒后才进入设备列表（原来 5.6 秒）。要恢复原行为把 `InitialEnumerateDelayMs` 设为 0 即可，代价是重新堵住 HID 检测。
+
+## 控制面板「用管理员身份启动就退出」的根因（0xe0434352）
+
+另一台机器回传的 `userdata/startup-crash.log`：
+
+```
+System.ArgumentNullException: Value cannot be null. (Parameter 'path1')
+   at System.IO.Path.Combine(String path1, String path2)
+   at Eto.Wpf.Forms.EnableThemingInScope.EnsureActivateContextCreated()
+   at Eto.Wpf.Forms.EnableThemingInScope..ctor(Boolean enable)
+   at Eto.Wpf.Forms.MessageBoxHandler.ShowDialog(Control parent)
+   at Eto.Forms.MessageBox.Show(...)
+   at OpenTabletDriver.UX.Wpf.Program.Main(String[] args) line 21
+```
+
+结论：不是缺 DLL、也不是单文件发布的问题，而是「**不要用管理员权限运行**」这个提示框自己崩了——Eto 的主题提示框要求 alive 的 Application 上下文，而它被调用时窗口还没建，`Path.Combine` 拿到 null 路径直接抛异常，异常从 `Main` 冒出把进程带走（0xe0434352 = CLR 未处理异常）。之前把同一现象误判成缺 `*_cor3.dll` 的 `0xC000041D`。
+
+修法：`Program.WarnAboutElevation()` 改用 user32 `MessageBoxW`（不依赖 Eto/WPF 上下文），并把整段包在 try/catch 里——提示失败绝不能是启动失败的原因；同时把结果写进 `userdata/startup-notes.log`。实测提权启动：提示框返回 1 后正常出窗口，`startup-crash.log` 不再生成；普通权限启动不受影响。仍然建议双击运行，只有 `install-wintab.bat` 需要提权。

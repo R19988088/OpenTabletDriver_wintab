@@ -1071,6 +1071,22 @@ namespace OpenTabletDriver.UX
             }
         }
 
+        private static string? AutoStartExecutable()
+        {
+            var directory = Environment.ProcessPath is { Length: > 0 } path
+                ? System.IO.Path.GetDirectoryName(path)
+                : null;
+
+            if (directory != null)
+            {
+                var daemon = System.IO.Path.Join(directory, "OpenTabletDriver.Daemon.exe");
+                if (System.IO.File.Exists(daemon))
+                    return daemon;
+            }
+
+            return Environment.ProcessPath;
+        }
+
         private static void ApplyAutoStart(bool enabled)
         {
             try
@@ -1080,7 +1096,11 @@ namespace OpenTabletDriver.UX
                 {
                     if (enabled)
                     {
-                        if (Environment.ProcessPath is { Length: > 0 } exe)
+                        // Register the daemon, not this panel: the panel is the 170 MB WPF app
+                        // and its own start-up is what made a logon feel slow, while drawing only
+                        // needs the daemon (measured 0.9 s from process creation to tablet ready
+                        // versus 6 s before). The panel can be opened by hand when it is wanted.
+                        if (AutoStartExecutable() is { Length: > 0 } exe)
                             run.SetValue(AutoStartValueName, $"\"{exe}\"");
                     }
                     else if (run.GetValue(AutoStartValueName) != null)
