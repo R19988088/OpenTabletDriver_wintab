@@ -313,3 +313,29 @@ System.ArgumentNullException: Value cannot be null. (Parameter 'path1')
 结论：不是缺 DLL、也不是单文件发布的问题，而是「**不要用管理员权限运行**」这个提示框自己崩了——Eto 的主题提示框要求 alive 的 Application 上下文，而它被调用时窗口还没建，`Path.Combine` 拿到 null 路径直接抛异常，异常从 `Main` 冒出把进程带走（0xe0434352 = CLR 未处理异常）。之前把同一现象误判成缺 `*_cor3.dll` 的 `0xC000041D`。
 
 修法：`Program.WarnAboutElevation()` 改用 user32 `MessageBoxW`（不依赖 Eto/WPF 上下文），并把整段包在 try/catch 里——提示失败绝不能是启动失败的原因；同时把结果写进 `userdata/startup-notes.log`。实测提权启动：提示框返回 1 后正常出窗口，`startup-crash.log` 不再生成；普通权限启动不受影响。仍然建议双击运行，只有 `install-wintab.bat` 需要提权。
+## 开机自启：后台先起 + 托盘静默（2026-11-15 续）
+
+需求：开机要能看到托盘图标，但不要弹出/激活控制面板。
+
+实现（`ux-patch/MainForm.cs` 的 `ApplyAutoStart`）：启用时写两条 Run 值。
+- `OpenTabletDriver Wintab` = `"...\OpenTabletDriver.Daemon.exe"`（`AutoStartDaemon()` 找同目录 daemon，找不到则不写这条）
+- `OpenTabletDriver Wintab Tray` = `"...\OpenTabletDriver.UX.Wpf.exe" --minimized --skipupdate`
+
+取消勾选两条一起删。之所以两条而不是一条：daemon 只负责笔，实测 1 秒内可画；面板是 174MB 的 WPF app，初始化 2 秒多，不能排在“能不能画”之前。分两条正好让 Windows 并行拉起，先画后托盘。
+
+面板静默：`App.cs` 本来就有 `--minimized`；`MainForm` 构造函数里 `WindowState==Minimized && EnableTrayIcon` 时置 `Visible=false`、`ShowInTaskbar=false`，`TrayIcon` 照常创建（所以托盘在），`DaemonWatchdog` 照常启动（若后台已在跑，`Instance.Exists` 让它跳过，不会重复起）。
+
+唤出窗口的坑（`ux-patch/TrayIcon.cs`、`ux-patch/App.cs`）：最小化启动后窗口 `Visible=false` 且不在任务栏，裸 `Show()` 只会得到一个看不见的窗口。两处统一改为先 `ShowInTaskbar=true`、`WindowState=Normal`，再 `Show()` + `BringToFront()` + `Focus()`：
+- 托盘的 `Indicator.Activated` 与右键菜单「Show Window」（新增私有 `TrayIcon.ShowWindow()`）
+- 第二个实例启动时通过命名管道让第一实例显示（`App.RunInternal` 的 ipc 分支）
+
+验证（本机按登录顺序模拟：先 daemon，再 `UX --minimized --skipupdate`）：
+- daemon 进程创建 → detect-done = 964ms，识别 `Wacom PTH-660`
+- daemon 进程数 1（面板看到后台已在跑，没重复拉起）
+- 枚举该进程可见窗口 = 0（只剩托盘）
+- 通知区登记项存在：`HKCU\Control Panel\NotifyIconSettings` 中 `...\OTD-Wintab-绿色版-20261115\OpenTabletDriver.UX.Wpf.exe`
+- 再启动一个实例 → 第一实例窗口变为 VISIBLE（`OpenTabletDriver v0.6.8.1 - Wacom PTH-660`），第二个自行退出
+
+未验证：真的用鼠标点托盘图标。本轮主桌面控制授权超时（`cu.switch_desktop('main')` 返回 user authorization timed out），只能用「第二个实例」这条同义路径验证唤出逻辑。Eto 2.5.6 的 `TrayIndicator` 只暴露 `Activated` 与 `StyleChanged` 两个事件（反射确认），左键是否触发由 WPF 平台实现决定；右键菜单「Show Window」调用的是同一个 `ShowWindow()`，一定有效。若左键点了没反应，就从右键菜单进，或改用定时窗口检查。
+
+另：Windows 11 默认把新图标收进「隐藏的图标」溢出区，使用说明里已提示把它拖到常显位置。
