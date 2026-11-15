@@ -206,3 +206,34 @@ z77（最终）：不再排队——新样本到达时，若队列里还有**没
 验证证据：SAI 在 WinTab 模式下喂 `ramp` 得到"细→粗"渐变笔画、`flat` 得到等粗粗线；`WTPacket` 日志（`%LOCALAPPDATA%\OTDWintab\wintab-sai2-<pid>.log`）里 `PACK ... np=...` 的 np 数值与喂入值一致。
 
 部署现状（本轮，已统一）：系统里只有一份 shim——`C:\Windows\System32\Wintab32.dll`（x64，SHA256 `7F0621EA…`）和 `C:\Windows\SysWOW64\Wintab32.dll`（i686 同源构建，`D1B9F20F…`）。应用目录里的本地 DLL 全部撤掉：`D:\app\art  sai 2\` 删除，PS 与 ProCraft 目录下的改名为 `Wintab32.dll.bak-doubao-20261115`（进程占用时无法删除，改名即可让它下次启动走系统 DLL）。安装走 `install-wintab.ps1`（提权后把 `portable-build\WintabNative` 里的 x64/x86 分别装进 System32 / SysWOW64，装前自动备份到 `WintabBackup\`）。滚动备份留在 `backups\`：`Wintab32-system32-z80-20261114.dll`、`Wintab32-ps-local-20261114.dll`（同 SHA256 `5DBCF95B…`，即上一版 z80）、`Wintab32-20261115-globalflip.dll`、`Wintab32-20261115-latency1ms.dll`。发布仓库 `repo-publish` 已推送到 GitHub（commit `2b513fd` 起）。
+
+---
+
+## 交付形态：一个 exe 启动（2026-11-15 晚）
+
+用户否决了「源码/脚本 zip」的交付方式（原话「你这个不对 我需要一个exe启动用原来的otd安装」），要的是双击就能用的单个可执行文件。做成 `Wintab 一键启动.exe`（596 KB），放在 OTD 目录里与 `OpenTabletDriver.UX.Wpf.exe` 并列。
+
+**它做什么**
+
+1. 比对自己内嵌的 `Wintab32.dll`（x64 197120B / x86 176640B，`include_bytes!` 编译进 exe）与 `System32\Wintab32.dll`、`SysWOW64\Wintab32.dll` 的字节。相同就一步都不写、不弹 UAC。
+2. 不同才请求提权（`ShellExecuteExW` + `SEE_MASK_NOCLOSEPROCESS` + `runas`，子进程带 `--install-shim`）。提权进程里：先把旧文件备份到 `WintabBackup\Wintab32-before-<epoch>-<label>.dll`，再写入。
+3. 写入失败（DLL 被运行中的程序映射着）时自动退到「改名让位」：把旧文件改成 `Wintab32.old-<epoch>.dll` 再写新文件，下次启动该程序自然加载新版，旧文件即回滚点。
+4. 起 `OpenTabletDriver.UX.Wpf.exe`：先试 exe 所在目录，再试同目录的 `portable-build\`，最后 `%OTD_BASE%`。每个候选等 4 秒，若立刻退出（非零退出码）就换下一个。
+
+**为什么这条回退链是必须的（不是防御性冗余）**
+
+根目录那份 `OpenTabletDriver.UX.Wpf.exe`（165683672B）在本机启动即崩，退出码 `0xC000041D`（`STATUS_FATAL_USER_CALLBACK_EXCEPTION`），应用日志 1026 里是 WPF `HwndSubclass.HookWindowProc → SetWindowLongPtrWndProc` 的 `DllNotFoundException`；同目录 `portable-build\` 那份（165538615B）正常。事件日志显示这个崩溃 11/12、11/13、11/14 都有，属既有问题、与 shim 无关，但正好让「一个 exe 启动」必须能换副本。
+
+**验证过的分支**（用 `--target-dir <目录>` 在临时目录里跑，不碰系统盘）
+
+| 场景 | 结果 |
+|---|---|
+| 目标不存在 | 写入成功，无备份 |
+| 目标存在但内容不对 | 旧文件进 `WintabBackup\`，新文件写入成功 |
+| 目标只读/被占用（写入拒绝） | 自动改名 `Wintab32.old-<epoch>.dll`，新文件写入成功 |
+| System32 已是最新 | 打印「已是最新，跳过安装」，不做任何写入 |
+| 根目录 UX 崩溃 | 打印退出码并自动改启 `portable-build\`，OTD 正常起来 |
+
+**注意**：exe 只负责「装/不装 + 启动」，不会重装 OTD、不下载任何东西、不动软件目录里的本地 DLL。把它放到别的目录会提示找不到 `OpenTabletDriver.UX.Wpf.exe`。
+
+源码在 `wintab-shim\src\bin\launcher.rs`（同 crate 的第一个 bin，`cargo build --release --bin launcher`）；`Cargo.toml` 为此补了 `Win32_UI_Shell` 与 `Win32_System_Registry` 两个 feature（`SHELLEXECUTEINFOW` 在 windows-sys 0.59 里被 `Win32_System_Registry` 门控，缺了会 `unresolved import`）。
