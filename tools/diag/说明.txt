@@ -1,0 +1,67 @@
+﻿诊断包（简化版：两次双击，最后只有一个 txt）
+==========================================
+
+旧版失败了两次，原因在我的脚本：
+  - 以前用 PowerShell 打包 zip、算哈希；
+  - 有些机器的 Windows PowerShell 5.1 缺 Compress-Archive / Get-FileHash 这类模块；
+  - 脚本又把错误重定向掉了 → 看起来“什么都没发生”，zip 自然从来没出现过。
+现在全部改成只用系统自带的 dir / type / certutil，不用 PowerShell，也不做 zip。
+
+
+一、放哪儿（只放两个文件）
+--------------------------
+把下面两个文件复制到绿色版目录里，跟 OpenTabletDriver.UX.Wpf.exe 同一层：
+    OpenTabletDriver.Wintab.dll
+    诊断收集.bat
+
+（本包里的 WintabNative\ 先不用管，只有日志显示系统里根本没装 Wintab32.dll 时才需要它。）
+
+
+二、怎么操作（就两次双击）
+--------------------------
+1) 完全关掉 OTD：托盘右键退出，任务管理器里确认 OpenTabletDriver.Daemon.exe 也没了。
+2) 双击 诊断收集.bat —— 第一次运行，它自己把诊断插件换进去两处（Plugins\ 和
+   userdata\Plugins\），然后告诉你去重启。
+3) 双击 OpenTabletDriver.UX.Wpf.exe，等托盘图标出现。
+4) 打开 SAI，用力、轻按各画几笔，再悬停几下 —— SAI 不要关。
+5) 再双击 诊断收集.bat —— 这次它把日志合并成同一个目录下的 diag-report.txt。
+6) 把 diag-report.txt 发回来就行：不用压缩、不用去桌面找、不用手动翻文件。
+
+脚本最后一次会把完整路径打印在窗口里，例如：
+    <绿色版目录>\diag-report.txt
+
+
+三、报告里有什么
+----------------
+===== system Wintab32.dll =====     系统两份 DLL 的大小和日期
+===== bundled WintabNative =====    包里两份 DLL 的大小和日期（对照用）
+===== sha256 =====                 上面四个文件的哈希（certutil 原生输出）
+===== settings.json =====          输出模式是不是 Wintab（配置原文）
+===== logs =====                   每个日志文件一段，最多取最新的 30 个
+
+其中两类日志是在判断断点用的：
+
+otd-wintab-<pid>.log（插件侧，每秒一行）
+    TABLET   识别到的平板型号、digitizer 分辨率、笔压上限
+    SHM      共享内存是否建成功、尺寸、maxP
+    START    进程位数、插件版本
+    STAT     每秒：收到多少报告、其中多少带压力、最大压力、位置/压力/发布调用次数
+    FIRST    第一次把非零压力写进共享内存
+    → 一直 pressured=0：OTD 根本没拿到压力（问题在驱动/平板/输出模式）
+    → pressured 有值但 pub 不涨：卡在插件这一侧
+
+wintab-<程序名>-<pid>.log（shim 侧，每个加载了 Wintab32.dll 的程序一份）
+    WTOpen   SAI 请求的 packet 掩码、是否包含压力字段、packet 宽度
+    PKT      每 200 包一次：原始压力 raw=、序列化后的 np=、坐标、整包十六进制
+    PEAK     每秒：最大压力 max=、打包后 packed=、样本数、SAI 取包次数 gets=
+    → 没有这个文件：SAI 没加载我们的 DLL
+    → 有文件但 PEAK 的 max 一直是 0：插件没把压力送进共享内存
+    → max 很大、gets 也在涨但 SAI 没压感：卡在 SAI 取包之后的解读（掩码/偏移）
+
+
+四、想换回正常插件
+------------------
+把绿色版原来的 zip 里的 Plugins\OpenTabletDriver.Wintab\OpenTabletDriver.Wintab.dll
+再覆盖回下面两处即可（普通版 15360 字节，诊断版 17920 字节，体积就能分辨）：
+    Plugins\OpenTabletDriver.Wintab\OpenTabletDriver.Wintab.dll
+    userdata\Plugins\OpenTabletDriver.Wintab\OpenTabletDriver.Wintab.dll
