@@ -21,15 +21,23 @@ namespace OpenTabletDriver.UX
 
             RefreshMenuItems();
 
-            Indicator.Activated += (_, _) =>
-            {
-                window.Show();
-                window.BringToFront();
-            };
+            Indicator.Activated += (_, _) => ShowWindow();
         }
 
         public TrayIndicator Indicator { get; }
         private MainForm window;
+
+        // The panel can start hidden (logon autostart runs it with --minimized, which leaves it
+        // out of the taskbar). Showing it again has to undo both of those, or Show() alone leaves
+        // the window invisible and the user with a tray icon that does nothing.
+        private void ShowWindow()
+        {
+            window.ShowInTaskbar = true;
+            window.WindowState = WindowState.Normal;
+            window.Show();
+            window.BringToFront();
+            window.Focus();
+        }
 
         public void Dispose()
         {
@@ -76,11 +84,7 @@ namespace OpenTabletDriver.UX
             {
                 Text = L.T("Show Window")
             };
-            showWindow.Click += (sender, e) =>
-            {
-                window.Show();
-                window.BringToFront();
-            };
+            showWindow.Click += (sender, e) => ShowWindow();
 
             var close = new ButtonMenuItem
             {

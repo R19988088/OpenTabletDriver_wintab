@@ -1048,6 +1048,7 @@ namespace OpenTabletDriver.UX
 
         private const string AutoStartRunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string AutoStartValueName = "OpenTabletDriver Wintab";
+        private const string AutoStartTrayValueName = "OpenTabletDriver Wintab Tray";
         private const string AutoStartPreferenceKey = @"Software\OpenTabletDriver\Wintab";
 
         /// <summary>
@@ -1071,7 +1072,7 @@ namespace OpenTabletDriver.UX
             }
         }
 
-        private static string? AutoStartExecutable()
+        private static string? AutoStartDaemon()
         {
             var directory = Environment.ProcessPath is { Length: > 0 } path
                 ? System.IO.Path.GetDirectoryName(path)
@@ -1084,7 +1085,7 @@ namespace OpenTabletDriver.UX
                     return daemon;
             }
 
-            return Environment.ProcessPath;
+            return null;
         }
 
         private static void ApplyAutoStart(bool enabled)
@@ -1096,16 +1097,22 @@ namespace OpenTabletDriver.UX
                 {
                     if (enabled)
                     {
-                        // Register the daemon, not this panel: the panel is the 170 MB WPF app
-                        // and its own start-up is what made a logon feel slow, while drawing only
-                        // needs the daemon (measured 0.9 s from process creation to tablet ready
-                        // versus 6 s before). The panel can be opened by hand when it is wanted.
-                        if (AutoStartExecutable() is { Length: > 0 } exe)
-                            run.SetValue(AutoStartValueName, $"\"{exe}\"");
+                        // Two entries, because a logon has two separate jobs. The daemon makes the
+                        // pen work about a second after logon and must not wait for the panel, while
+                        // the panel only needs to sit in the tray with its window hidden: it is the
+                        // 170 MB WPF app and starting it visibly is what made logon feel slow.
+                        if (AutoStartDaemon() is { Length: > 0 } daemon)
+                            run.SetValue(AutoStartValueName, $"\"{daemon}\"");
+
+                        if (Environment.ProcessPath is { Length: > 0 } panel)
+                            run.SetValue(AutoStartTrayValueName, $"\"{panel}\" --minimized --skipupdate");
                     }
-                    else if (run.GetValue(AutoStartValueName) != null)
+                    else
                     {
-                        run.DeleteValue(AutoStartValueName, false);
+                        if (run.GetValue(AutoStartValueName) != null)
+                            run.DeleteValue(AutoStartValueName, false);
+                        if (run.GetValue(AutoStartTrayValueName) != null)
+                            run.DeleteValue(AutoStartTrayValueName, false);
                     }
                 }
 
