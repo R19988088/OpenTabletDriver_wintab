@@ -23,6 +23,7 @@ namespace OpenTabletDriver.UX
     class CommandLineOptions
     {
         public bool StartMinimized { get; set; }
+        public bool ForceShow { get; set; }
         public bool SkipUpdate { get; set; }
     }
 
@@ -55,9 +56,17 @@ namespace OpenTabletDriver.UX
         private static void RunInternal(string platform, CommandLineOptions options)
         {
             LanguagePreferences.Load();
+
+            // Once the panel has been shown at least once, a plain start goes straight to the tray:
+            // the window is the 170 MB WPF part and it has nothing to say until something is wrong.
+            // --show overrides that, and launching while an instance runs still reveals the window.
+            var startMinimized = options.StartMinimized || (!options.ForceShow && PanelShownBefore());
+            if (!startMinimized)
+                RememberPanelShown();
+
             var app = new Application(platform);
             var mainForm = new MainForm();
-            if (options.StartMinimized)
+            if (startMinimized)
             {
                 mainForm.WindowState = WindowState.Minimized;
                 if (EnableTrayIcon)
@@ -124,10 +133,16 @@ namespace OpenTabletDriver.UX
                 Description = "Skip checking for updates"
             };
 
+            var forceShow = new Option<bool>("--show")
+            {
+                Description = "Show the window even if it is normally started minimized"
+            };
+
             var root = new RootCommand("OpenTabletDriver UX")
             {
                 minimizedOption,
-                skipUpdate
+                skipUpdate,
+                forceShow
             };
 
             var results = root.Parse(args);
@@ -139,9 +154,43 @@ namespace OpenTabletDriver.UX
             }
 
             commandLineOptions.StartMinimized = results.GetValue(minimizedOption);
+            commandLineOptions.ForceShow = results.GetValue(forceShow);
             commandLineOptions.SkipUpdate = results.GetValue(skipUpdate);
 
             return commandLineOptions;
+        }
+
+        private const string AppPreferenceKey = @"Software\OpenTabletDriver\Wintab";
+        private const string PanelShownValue = "PanelShown";
+
+        /// <summary>
+        /// True when this copy has already presented its window to the user, so a start with no
+        /// arguments can go straight to the tray instead of covering the desktop again.
+        /// </summary>
+        private static bool PanelShownBefore()
+        {
+            try
+            {
+                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(AppPreferenceKey);
+                return key?.GetValue(PanelShownValue) is int shown && shown != 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void RememberPanelShown()
+        {
+            try
+            {
+                using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(AppPreferenceKey);
+                key?.SetValue(PanelShownValue, 1, Microsoft.Win32.RegistryValueKind.DWord);
+            }
+            catch
+            {
+                // Worst case the window shows again next time, which is the old behaviour.
+            }
         }
 
         public static App Current { get; } = new App();

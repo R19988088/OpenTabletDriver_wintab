@@ -19,6 +19,10 @@ namespace OpenTabletDriver.UX.Wpf
             if (principal.IsInRole(WindowsBuiltInRole.Administrator))
                 WarnAboutElevation();
 
+            // A shim that is not installed looks exactly like a broken shim, so verify the system
+            // copies before the panel starts and offer to install them when they are missing.
+            WintabInstall.EnsureInstalled();
+
             App.Run(Eto.Platforms.Wpf, args);
         }
 

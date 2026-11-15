@@ -339,3 +339,59 @@ System.ArgumentNullException: Value cannot be null. (Parameter 'path1')
 未验证：真的用鼠标点托盘图标。本轮主桌面控制授权超时（`cu.switch_desktop('main')` 返回 user authorization timed out），只能用「第二个实例」这条同义路径验证唤出逻辑。Eto 2.5.6 的 `TrayIndicator` 只暴露 `Activated` 与 `StyleChanged` 两个事件（反射确认），左键是否触发由 WPF 平台实现决定；右键菜单「Show Window」调用的是同一个 `ShowWindow()`，一定有效。若左键点了没反应，就从右键菜单进，或改用定时窗口检查。
 
 另：Windows 11 默认把新图标收进「隐藏的图标」溢出区，使用说明里已提示把它拖到常显位置。
+
+## 控制面板：用过一次之后，双击就直接进托盘
+
+需求原话是「启动的时候判断如果 OpenTabletDriver.UX.Wpf 识别到用户用过就直接最小化」，同时保留开机自启那条「托盘在、面板不弹」。
+
+做法（`ux-patch/App.cs`）：
+
+- `CommandLineOptions` 增加 `ForceShow`，命令行增加 `--show`。
+- `RunInternal` 里唯一的一处判断：`startMinimized = options.StartMinimized || (!options.ForceShow && PanelShownBefore())`。非最小化启动时立刻 `RememberPanelShown()`。
+- 标记存在注册表 `HKCU\Software\OpenTabletDriver\Wintab` 的 `PanelShown`（DWORD 1）。读不到（首次）或异常，都按「没显示过」处理，即退化成显示窗口。
+
+于是三种启动情形：
+
+| 情形 | 行为 |
+| --- | --- |
+| 第一次双击（`PanelShown` 不存在） | 出窗口，并写入 `PanelShown=1` |
+| 之后双击（无参数） | 直接进托盘，窗口不出现；`--show` 可强制出窗 |
+| 已经在运行又双击 | 第二个实例走命名管道，把第一实例窗口唤出后自己退出（`--show` 与无参数都一样） |
+
+开机自启那条 `Run` 值本来就是 `--minimized --skipupdate`，不受影响。
+
+实测（枚举该进程 `IsWindowVisible` 的窗口，只数有标题的）：
+
+- 第 1 次启动：可见窗口 1 个（`OpenTabletDriver v0.6.8.1 - Wacom PTH-660`），daemon 1 个，`PanelShown` 写成 1
+- 第 2 次启动（无参数）：可见窗口 0 个，daemon 1 个
+- 第 3 次启动带 `--show`：可见窗口 1 个
+- 后台状态（无窗口）再双击一次带 `--show`：第一实例窗口变为可见，第二实例退出
+
+## 没装 Wintab32.dll 时启动自动安装
+
+原来的状态是「没有」：只有手工的 `install-wintab.bat`（会 taskkill 三个 OTD 进程并以 `pause` 结尾，不适合被面板静默调用）。新增 `ux-patch/WintabInstall.cs`，在 `Program.Main` 里「提权告警之后、`App.Run` 之前」调用 `WintabInstall.EnsureInstalled()`。
+
+流程：
+
+1. 用 SHA-256 比对包内 `WintabNative\Wintab32.dll` / `Wintab32_x86.dll` 与 `%windir%\System32\Wintab32.dll` / `SysWOW64\Wintab32.dll`。两份都一致就直接返回，不打扰（本机实测：无任何提示、不写日志）。
+2. 有差异时，非提权状态弹 user32 `MessageBoxW`（「系统里的 Wintab32.dll 与随包版本不一致 / 未安装，是否现在安装？」）。选「否」写 `WintabInstallDeclined=1`，以后不再问；想再装就删这个值。
+3. 选「是」则把复制步骤写成 `%TEMP%\otd-wintab-install-<stamp>.ps1`，非提权用 `ShellExecuteExW`（`runas`、`SW_HIDE`、`SEE_MASK_NOCLOSEPROCESS`）拉起，已提权则直接 `powershell.exe -File`。脚本先备份到包内 `WintabBackup\Wintab32.<tag>-<stamp>.dll`，复制失败（被占用）时把目标改名为 `Wintab32.old-<epoch>.dll` 让位再复制。
+4. 脚本只负责「干了什么」，是否真的装对由 C# 复制完再比对一次哈希决定。结果写入 `userdata\startup-notes.log`，成功/失败各弹一个原生提示框。
+
+### 干跑开关与本轮抓出的两个真 bug
+
+`OTD_INSTALL_DRYRUN` 把目标改指 `%TEMP%\otd-install-dryrun\{system32,syswow64}-Wintab32.dll`、跳过询问和弹窗、不走 UAC、保留脚本与日志，用来在本机（系统 DLL 已是最新、不能乱覆盖）验证整条链路。
+
+1. **脚本 UTF-8 无 BOM → PowerShell 5.1 按 ANSI 解码**。脚本里有用户目录路径 `C:\Users\画画的\...`，被读成 `C:\Users\鐢荤敾鐨刓...`，`[IO.File]::WriteAllText` 报 `DirectoryNotFoundException`，日志一行都没留下（于是 C# 侧只看到「installer produced no log」）。改成 `new UTF8Encoding(true)` 带 BOM 写入。
+2. **脚本里调 `Get-FileHash` 报「无法识别为 cmdlet」**。该子进程里 `Microsoft.PowerShell.Utility` 没能加载（此时 64 位那份已复制成功、32 位那份还没轮到，现象正是「第一项 OK、第二项 MISSING」）。修法不是去修模块加载，而是把哈希从脚本里删掉：脚本只做备份/复制并记录 OK/FAIL/ERROR，装完由 exe 自己再比对一次系统文件与包内文件，权威且少一个依赖。
+
+干跑通过后的记录（`userdata\startup-notes.log`）：
+
+```
+# wintab install: OK   ...\otd-install-dryrun\system32-Wintab32.dll | OK   ...\syswow64-Wintab32.dll | DONE
+# wintab install result: both copies match
+```
+
+沙箱两份哈希前缀 `7F0621EAE5F46DBB`（197120B）与 `D1B9F20F7BA205A0`（176640B），与系统里现有的一致。
+
+注意：干跑只证明「检测差异 → 生成脚本 → 复制 → 备份 → 复核」这条链路；真正写 System32 需要 UAC 确认，写入逻辑与之前手工验证过的 `replace-wintab-system32.ps1` 相同。另外，本机系统 DLL 已是最新时不会弹任何框，所以「装到真 System32」这次没有在真机上重跑一遍（避免覆盖掉正在用的 shim）。
