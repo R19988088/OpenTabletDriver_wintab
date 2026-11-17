@@ -15,7 +15,7 @@
 | `release/` | 可直接使用的成品（**v32 / v34**），见 [docs/versions.md](docs/versions.md) |
 | `docs/` | 版本台账、Slim 设计说明、Wintab 调试与踩坑记录 |
 | `tools/` | 构建、安装、诊断、归档收尾脚本 |
-| `_archive/` | 历史构建与旧产物（不进 git；确认不需要后可整目录删除） |
+| `_archive/` | 归档区，内部**自带一个独立 git 仓库**，只跟踪旧版 `old-versions/`（v32/v33/v34）；其余是旧分发包、上游源码、历代 shim 备份（不进主仓库） |
 
 完整版的原理、构建与使用说明：见 [docs/otd-wintab.md](docs/otd-wintab.md)。
 
@@ -27,7 +27,8 @@
 | **v34** | `release/v34/` | 正常使用；`D:\app\OpenTabletDriver\OpenTabletDriver.Slim.exe` 就是它 |
 
 **已知问题（v32、v34 都有）：SAI 2 窗口定位偏下** —— 在 SAI 2 里窗口会被摆到屏幕偏下的位置，暂无修复版本。
-其余版本（v21–v39 等）已归档到 `_archive/builds/`，台账见 [docs/versions.md](docs/versions.md)。
+
+版本策略：**只保留最近三个版本**（v32 / v33 / v34）。v33 作为 v32 与 v34 之间的中间状态留在旧版仓库；更早的 v21–v31 及所有 `build*`/`publish*` 中间构建已删除。台账见 [docs/versions.md](docs/versions.md)，旧版仓库用 `git -C _archive tag` 查看。
 
 ## 快速构建（Slim）
 
@@ -42,5 +43,5 @@ dotnet publish src\OpenTabletDriver.Slim -c Release -r win-x64 -o dist `
 ## 目录约定
 
 - `release/` 只放**确认能用**的成品，一个版本一个目录，自带 `README.md` 说明哈希与已知问题。
-- 每次构建产物放临时目录，验证通过才提升到 `release/`；失败的直接进 `_archive/builds/`。
-- `_archive/`、`release/`、`slim/` 不进版本库（见 `.gitignore`），二进制走 GitHub Releases 或本地 `release/`。
+- 版本只留最近三个：最新的放 `release/`，之前的进 `_archive`（独立 git 仓库，一个版本一个 tag）；更早的和中间构建直接删，不占空间。
+- `_archive/`、`release/`、`slim/` 不进主仓库（见 `.gitignore`），二进制走 GitHub Releases 或本地 `release/`。
