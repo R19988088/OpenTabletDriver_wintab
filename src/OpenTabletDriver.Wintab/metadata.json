@@ -1,0 +1,9 @@
+{
+  "Name": "Wintab (No Driver)",
+  "Owner": "D & 大肥鱼",
+  "Creator": "D & 大肥鱼",
+  "Description": "Wacom PTH-660 的 Wintab 输出模式：把笔的绝对坐标和 0-32767 真实压感写进共享内存，交给 Wintab32 中间层，让 Photoshop、ProCraft 等 WinTab 应用直接拿到压感，不需要安装厂商驱动。",
+  "PluginVersion": "1.0.0",
+  "SupportedDriverVersion": "0.6.6.0",
+  "LicenseIdentifier": "MIT"
+}

@@ -1,0 +1,12 @@
+<Project>
+
+  <PropertyGroup>
+    <VersionBase>0.1.0</VersionBase>
+    <FrameworkBase>net8.0</FrameworkBase>
+    <VersionPrefix>$(VersionBase)</VersionPrefix>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <LangVersion>latest</LangVersion>
+    <SuppressNETCoreSdkPreviewMessage>true</SuppressNETCoreSdkPreviewMessage>
+  </PropertyGroup>
+
+</Project>

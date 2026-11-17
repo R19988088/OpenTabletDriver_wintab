@@ -8,3 +8,17 @@ dist/
 *.bak-*
 *.pdb
 *.zip
+
+# ---- 2026-11-17 目录整理后新增 ----
+# 归档区与发布产物不进版本库（二进制走 GitHub Releases 或本地 release/）
+/_archive/
+/release/
+# 正在收尾的旧构建目录（重启后由 tools/finish-archive.ps1 搬走并删除）
+/slim/
+# .NET 构建输出
+src/**/bin/
+src/**/obj/
+# Rust
+shim/target/
+# 运行日志
+*.log
