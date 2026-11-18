@@ -31,14 +31,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="..\..\..\wintab-shim\target\release\Wintab32.dll"
+    <!-- 随包 shim：从仓库内的 shim/assets 取，单文件发布时嵌进 exe。
+         旧路径 ..\..\..\wintab-shim\target\release 是仓库之外的目录，早就没了，
+         条件不成立就静默不嵌，表现是界面上显示"随包缺少 Wintab32.dll"。 -->
+    <EmbeddedResource Include="..\..\shim\assets\Wintab32.dll"
                       LogicalName="Wintab32.dll"
-                      Condition="Exists('..\..\..\wintab-shim\target\release\Wintab32.dll')" />
-    <None Include="..\..\..\wintab-shim\target\release\Wintab32.dll"
-          Link="WintabNative\Wintab32.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest"
-          Condition="Exists('..\..\..\wintab-shim\target\release\Wintab32.dll')" />
+                      Condition="Exists('..\..\shim\assets\Wintab32.dll')" />
   </ItemGroup>
 
 </Project>

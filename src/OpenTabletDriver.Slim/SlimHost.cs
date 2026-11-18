@@ -43,6 +43,12 @@ namespace OpenTabletDriver.Slim
         /// <summary>显示器区域 / 数位板区域（原版 AbsoluteModeSettings 的精简版）。</summary>
         public MappingConfig Mapping { get; } = MappingConfig.Load();
 
+        /// <summary>
+        /// 触摸 / 环 管线：0x11 的环和 0x21/0xD2 的触点都从这里进来，
+        /// 由 WintabOutputMode.ReportReceived 喂包（笔的报文也走同一个事件，但这里会忽略）。
+        /// </summary>
+        public TouchEngine Touch { get; } = new();
+
         public SlimHost()
         {
             Log.Output += OnLogMessage;
@@ -127,6 +133,9 @@ namespace OpenTabletDriver.Slim
                 {
                     NativePointer = native
                 };
+
+                // 触摸/环：同一根读取线程上的旁路，不单独开 HID，也不会和笔抢接口
+                mode.ReportReceived += report => Touch.Feed(report);
                 Mapping.EnsureDefaults(digitizer.Width, digitizer.Height);
                 Mapping.Save();
                 mode.Tablet = tree.CreateReference();
@@ -338,6 +347,31 @@ namespace OpenTabletDriver.Slim
                 $"读取(前)    : DeadZone={before.DeadZone:0.000} Elasticity={before.Elasticity:0.0} StrokeFilter={before.StrokeFilter} MaxPressure={before.MaxPressure:0.00} Mode={before.InputMode}",
                 $"写入后读取  : DeadZone={after.DeadZone:0.000}",
                 $"结论        : {(roundTripOk ? "feel.json 读写正常" : "feel.json 读写异常（可能是裁剪导致序列化失效）")}");
+        }
+
+        /// <summary>
+        /// 命令行验收：把输出接起来跑 N 秒，只统计触摸 / 环报文，指针用替身不点桌面。
+        /// 用来回答"0x11 环到底有没有进来、0x21/0xD2 到底来没来"，不需要开界面。
+        /// </summary>
+        public static string RunTouchDump(int seconds)
+        {
+            using var host = new SlimHost();
+            host.DetectAsync().GetAwaiter().GetResult();
+
+            var state = host.StartOutput(new ProbePointer());
+            if (!state.StartsWith("运行中", StringComparison.Ordinal))
+                return $"输出没起来：{state}";
+
+            var deadline = Environment.TickCount64 + seconds * 1000L;
+            while (Environment.TickCount64 < deadline)
+                System.Threading.Thread.Sleep(200);
+
+            return string.Join(Environment.NewLine,
+                $"时长        : {seconds}s",
+                $"数位板      : {host.TabletName}",
+                $"输出        : {state}",
+                $"触摸统计    : {host.Touch.Describe()}",
+                $"最近动作    : {host.Touch.LastAction}");
         }
 
         /// <summary>替身指针：只记账，不碰真实鼠标，用来验证管线是否把点击送到了指针。</summary>

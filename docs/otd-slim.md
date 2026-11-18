@@ -1011,3 +1011,83 @@ lcSysOrg/lcSysExt`）决定，改设备轴对它的位置显示毫无作用—�
 `Wintab32.prev-20261116-2312.dll`、`Wintab32.rel/relcoord/axischg/park/abc/v39plain/z77/z78/z79-*.dll`
 
 带 `exp-` 前缀的都是失败的实验版，别装；要回到能用状态装 `base-` 或 `dist-v32` 里那份。
+## 2026-11-18 v32「PS 无压感 / 压力放大失效」定位结论
+
+**现象**：wintab 模式的 PS 拿不到压感；兼容 wintab/ink 的软件有压力；压力放大（保留峰值）拨了没效果。
+
+**接管状态（确实接管了）**
+- `WTabletServicePro`：Disabled / Stopped；`WacomPen`：Stopped；`wacomrouterfilter` 还在跑，只是遗留过滤驱动，不提供笔设备
+- 板子 `MI_01` / `MI_02` → WinUSB（oem58 / oem62 inf）
+- 系统笔设备数 **0**：Windows Ink 侧根本没有这支笔，压力只可能来自 System32 的 shim
+
+**两个真实故障**
+1. `%LOCALAPPDATA%\OTDWintab` 变成指向已删构建 `E:\...\slim\build-final2\data` 的**死联接**。shim 的 `read_feel()` 读不到 `feel.json` 就整段 PASS_THROUGH，压力放大直接失效；`diag()` 也写不出去，所以那段时间一个 `wintab-*.log` 都没有，从外部看完全“黑箱”。
+2. 旧实例堆积：45 个 11-15/16 的 `OpenTabletDriver.Slim.exe`，exe 本体都已随 `slim\` 删除。当时在跑的 v32 共享环只有 0–0.5 包/秒且压力恒 0；改成干净实例后，同一块共享内存变成 280–400 包/秒、峰值压力 73%。
+
+**修复后实测**
+- `Local\OpenTabletDriverWintab`：version=2、enabled=1、extent 44800×29600，writeIndex 稳定增长，包率约 400/s，maxP≈23850/32767
+- PS（`wintab-Photoshop-*.log`）：每包 `mask=0x1FFC`，`np` 可达 32767，压力已经进 PS
+- 板子满压 6104/8191≈74.5%，经 MaxPressure 0.69 归一后饱和到 32767 → 压力放大确实生效
+
+**注意**
+- 那 45 个旧实例是跨会话僵死进程：普通 Stop-Process、taskkill、CIM Terminate、提权 taskkill 全部被系统拒绝，只能重启清掉（它们没有自启项，不会复活）
+- shim 每 1 s 重读一次 feel.json，且 `InputMode` 必须含 `winTab` 才吃曲线
+- 死联接重启**不会**自愈（问题在磁盘上），所以加了开机自检：`tools\otd-cleanup.cmd` + 计划任务 `OTD Startup Cleanup`（登录后 20 s、最高权限、隐藏窗口、日志 `%LOCALAPPDATA%\OTD-startup-cleanup.log`）；卸载 `schtasks /delete /tn "OTD Startup Cleanup" /f`
+- `SysWOW64\Wintab32.dll` 仍是 11-15 那份 176640 字节的旧构建，32 位应用走的是另一条码；64 位 PS 用的是 System32 的 5EACB003（v32 随包一致）
+
+## 2026-11-18 v35：按 v33 / v34 规格重写源码
+
+`slim\src\OpenTabletDriver.Slim` 在 11-17 被手删，且从未进过 git，v33/v34 无法用当时的 `src\` 复原
+（那份 11-16 17:33 的快照仍是"压力"页、没有 Touch* 字段、没有接管代码）。这一轮按本文档
+853–917 行的规格把三块功能重写回 `src\OpenTabletDriver.Slim\`，并重新发布 v35。
+
+**新增 / 改动的文件**
+
+| 文件 | 作用 |
+|---|---|
+| `FeelConfig.cs` | 加 `TouchUndo / TouchRotate / TouchZoom` 三个 bool（默认全开），仍是同一个 `feel.json` |
+| `InputPage.cs` | 由 `PressurePage.cs` 改名重写：页名「输入」，压力区不动，底部加「触摸控制」三开关 + 「Wacom 接管」区；校准板高度 240 → 192 |
+| `TouchEngine.cs` | 触摸 / 环管线：0x11 → 滚轮，0x21/0xD2 → 双指缩放/旋转、三指撤销；注入动作走独立线程 |
+| `WacomControl.cs` | 接管四步 + 恢复 + 状态；提权脚本一次跑完，状态走 `reg query` / 进程计数 |
+| `WintabOutputMode.cs`（`src\OpenTabletDriver.Wintab`） | 加 `ReportReceived` 事件，把每包报文旁路给触摸引擎（笔的输出路径不变） |
+| `SlimHost.cs` | `Touch` 属性 + 订阅 `ReportReceived`；新增 `RunTouchDump()` |
+| `MainWindow.cs` | 导航「压力」→「输入」，`--page=压力` 仍按「输入」处理 |
+| `Program.cs` | 新 CLI：`--wacom-status`、`--wacom-takeover`、`--wacom-restore`、`--touchdump[=秒]`；这些命令在单实例守卫之前返回，不会顶掉正在用的实例 |
+| `HotkeyEngine.cs` / `WindowsKeyboard.cs` | 暴露 `Wheel()`；补 `PLUS / MINUS` 两个 OEM 虚拟键 |
+
+**三块功能的实际行为**
+
+1. **输入页三个开关**：写入 `feel.json` 的 `TouchUndo / TouchRotate / TouchZoom`；shim 只用
+   `DeadZone / Elasticity / StrokeFilter / MaxPressure / InputMode`，多出来的字段不影响压感
+   （shim 的 `read_feel()` 是按字段名做字符串匹配，不整体反序列化）。
+2. **触摸 / 环管线**：
+   - `0x11`（`IntuosV2AuxReport`）：`AnalogPositions[0]` 为环的绝对位置（0..71，`report[4]` 的 bit7
+     是有效位），按首尾相接处理回绕，每 3 格发一次滚轮 120；环按钮只计数。
+   - `0x21 / 0xD2`（`IntuosV2TouchReport`）：两指间距变化 >15% 发一次 `Ctrl +/-`（回到 ±7% 内重新武装）；
+     两指连线角度变化 ≥12°、间隔 ≥350ms 发一次 `Ctrl+Alt+←/→`；一次手势里同时出现 ≥3 指、
+     抬手时发一次 `Ctrl+Z`（400ms 冷却）。
+   - 注入全部排到 `OTD Touch Actions` 后台线程，`Feed()` 只做状态计算，绝不因为 SendInput
+     卡住而拖慢笔（`Feed` 和笔的报文在同一个设备读取线程上，v32 的死实例事故就是这个线程被占满）。
+3. **Wacom 接管**：一次提权 PowerShell 里按四步执行 —— 杀 Wacom 用户态进程 → `sc config start= disabled`
+   + `sc stop` → 三轮补杀（间隔 300ms）→ `reg query` 回读 `Start` 必须 = 4；原始值写
+   `data\wacom-state.ini`（`服务名=Start数值`）。如果第一次接管时服务已经是 4，记录值写 2（Wacom 出厂默认自动），
+   否则「恢复」会把服务一直留在禁用状态。只动 `WTabletServicePro`，不碰 `WacomPen` 等内核驱动。
+
+**验收方式（不需要开界面）**
+
+```powershell
+OpenTabletDriver.Slim.exe --wacom-status     # 服务 Start / Wacom 进程数 / 接管记录
+OpenTabletDriver.Slim.exe --touchdump=15     # 接上输出跑 15 秒，统计环与触点报文（指针用替身，不点桌面）
+OpenTabletDriver.Slim.exe --page=输入          # 直接打开输入页
+```
+
+`--touchdump` 必须**先结束所有 OTD 实例**再跑：同一块板被两个句柄同时读时，报文会被两边分掉，
+统计出来的包率没有意义（这也是 11-18 排查时踩过的坑）。
+
+**已知边界**
+
+- 真机上 `0x21 / 0xD2` 从未出现过（`Wacom_TouchUser` 可能截住），所以双指/三指代码目前是"正确但待触发"。
+  接管后触摸是否恢复仍未实测：先点「接管 Wacom」，再用 `--touchdump` 看 `触点` 计数是否从 0 变成非 0。
+- 旋转映射到 `Ctrl+Alt+←/→` 是本次选的默认（文档没有规定具体按键），要换直接改 `TouchEngine.Rotate()`。
+- 单文件发布 + 裁剪已经在 v32/v34 验证过；这次把被删掉的 shim 嵌入路径修正为 `shim\assets\Wintab32.dll`
+  （仓库内，198,144 字节 / `5EACB003…`），exe 内已重新带上 shim。

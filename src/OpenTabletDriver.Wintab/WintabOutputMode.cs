@@ -58,10 +58,28 @@ namespace OpenTabletDriver.Wintab
             }
         }
 
+        /// <summary>
+        /// Every report the OTD device tree hands to this output mode, before it is interpreted.
+        /// The Slim host subscribes to translate aux (0x11) and touch (0x21/0xD2) reports into
+        /// ring scrolling and gestures; the pen path itself does not depend on this event.
+        /// </summary>
+        public event Action<IDeviceReport>? ReportReceived;
+
         public override void Read(IDeviceReport deviceReport)
         {
             SyncDisplay();
             StatReport(deviceReport);
+
+            // 触摸/环的翻译绝不能影响笔：哪怕订阅方抛异常也直接吞掉，笔照常走。
+            try
+            {
+                ReportReceived?.Invoke(deviceReport);
+            }
+            catch
+            {
+                // 手势侧出错不影响输出
+            }
+
             base.Read(deviceReport);
         }
 

@@ -50,7 +50,10 @@ namespace OpenTabletDriver.Slim
             ["UP"] = 0x26,
             ["DOWN"] = 0x28,
             ["LEFT"] = 0x25,
-            ["RIGHT"] = 0x27
+            ["RIGHT"] = 0x27,
+            // 缩放用：主键盘上的 +/-（OEM 键，不受输入法影响）
+            ["PLUS"] = 0xBB,
+            ["MINUS"] = 0xBD
         };
 
         public static bool IsModifier(string name) =>

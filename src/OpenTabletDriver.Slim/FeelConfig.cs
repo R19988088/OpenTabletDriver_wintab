@@ -21,6 +21,12 @@ namespace OpenTabletDriver.Slim
         public double MaxPressure { get; set; } = 1.0;
         public string InputMode { get; set; } = "winTab";
 
+        // 「输入」页底部那三个触摸开关。只由本程序写，wintab-shim 不读它们，
+        // 开关状态直接决定 TouchEngine 要不要把对应手势翻译成按键。
+        public bool TouchUndo { get; set; } = true;
+        public bool TouchRotate { get; set; } = true;
+        public bool TouchZoom { get; set; } = true;
+
         private static string FilePath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "OTDWintab",

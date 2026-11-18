@@ -32,10 +32,29 @@ namespace OpenTabletDriver.Slim
                 Thread.Sleep(500);
             }
 
+            var mode = args.FirstOrDefault(arg => arg.StartsWith("--", StringComparison.Ordinal))?.ToLowerInvariant();
+
+            // 诊断/接管类命令不占设备、也不该把正在用的实例顶掉，所以放在单实例守卫之前
+            if (mode == "--wacom-status")
+            {
+                WriteReport("wacom-status.txt", WacomControl.Status());
+                return;
+            }
+
+            if (mode == "--wacom-takeover")
+            {
+                WriteReport("wacom-takeover.txt", WacomControl.Takeover());
+                return;
+            }
+
+            if (mode == "--wacom-restore")
+            {
+                WriteReport("wacom-restore.txt", WacomControl.Restore());
+                return;
+            }
+
             // 单实例：后开的留下，先开的自己退出（旧版本直接结束掉）
             Instances.EnforceSingle();
-
-            var mode = args.FirstOrDefault(arg => arg.StartsWith("--", StringComparison.Ordinal))?.ToLowerInvariant();
 
             // 提权清理：管理员权限下把其它实例全结束掉，然后直接退出（不开界面）
             if (mode == "--killothers")
@@ -68,6 +87,21 @@ namespace OpenTabletDriver.Slim
             if (mode == "--feeltest")
             {
                 WriteReport("feeltest.txt", SlimHost.RunFeelTest());
+                return;
+            }
+
+            // 触摸/环验收：接上输出跑几秒，只统计报文种类（不开界面、不点桌面）
+            if (mode == "--touchdump")
+            {
+                var seconds = 10;
+                foreach (var arg in args)
+                {
+                    if (arg.StartsWith("--seconds=", StringComparison.Ordinal)
+                        && int.TryParse(arg["--seconds=".Length..], out var parsed))
+                        seconds = parsed;
+                }
+
+                WriteReport("touchdump.txt", SlimHost.RunTouchDump(seconds));
                 return;
             }
 

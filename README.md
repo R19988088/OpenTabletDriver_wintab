@@ -25,6 +25,7 @@
 |---|---|---|
 | **v32** | `release/v32/` | 正常使用；`D:\app\OpenTabletDriver\OpenTabletDriver.Slim.exe-` 就是它 |
 | **v34** | `release/v34/` | 正常使用；`D:\app\OpenTabletDriver\OpenTabletDriver.Slim.exe` 就是它 |
+| **v35** | `release/v35/` | 源码重写版（v33+v34 三块功能 + 输入页三开关），行为对齐 v34 |
 
 **已知问题（v32、v34 都有）：SAI 2 窗口定位偏下** —— 在 SAI 2 里窗口会被摆到屏幕偏下的位置，暂无修复版本。
 

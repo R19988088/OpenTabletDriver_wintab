@@ -171,6 +171,12 @@ namespace OpenTabletDriver.Slim
         }
 
         /// <summary>
+        /// 给触摸环用的滚轮注入：delta 为 120 的整数倍（正 = 向上/向前）。
+        /// 事件带 OtdMarker，自己的鼠标钩子会放行，不会被当成"用户滚轮"再翻译一次。
+        /// </summary>
+        public static bool Wheel(int delta, bool horizontal = false) => SendWheel(delta, horizontal);
+
+        /// <summary>
         /// 笔的坐标是先算出来再由我们自己注入的，所以锁方向要在这里夹一次，
         /// 不能指望鼠标钩子里再改（注入的事件改 lParam 无效）。
         /// </summary>
