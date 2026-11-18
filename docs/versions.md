@@ -145,8 +145,9 @@ git -C "E:\000 app\OpenTabletDriver\_archive" checkout v33
   |---|---|---|---|---|
   | `710622e` | 原始（`device=0`、`sys_ext=0`、Z 量程 1、无 Y 翻转、4ms） | `714C06945A` | **有压感** | **无压感** |
   | `710622e`+sysExt | 只把 `sys_ext` 设成桌面尺寸、`sys_sens=65536` | `253F219E51` | 有压感 | **有压感，但 Y 轴反了** |
-  | `710622e`+sysExt+flipy | 再加 `packet_y = device_extent().1 - pen.y` | `912D4A5B84` | 待验 | 待验 |
+  | `710622e`+sysExt+flipy | 再加 `packet_y = device_extent().1 - pen.y` | `912D4A5B84` | **有压感** | **有压感、Y 轴正确** |
 - **结论**：SAI 需要 `sys_ext`（桌面尺寸）才会把包映射到屏幕并读压力；`device=0xFFFFFFFF`、Z 量程 `-1023..2047`、`sens=65536` 这些“官方默认值”**不是必需的**，它们很可能就是 PS 压感丢失的原因（`lcDevice` 从 0 变成 -1，PS 查不到设备轴信息→压力恒 0）。
+- **已发布**：这一版就是 **v0.8**（提交 `97f318b`，tag `v0.8` 已推到 GitHub），`shim/assets` 里的 `Wintab32.dll` / `Wintab32_x64.dll` 就是用户实测过的 `912D4A5B84`，x86 为同源 `F3406C085A`。
 - **版本备份**：`_archive\wintab\shim-builds\` 下按 hash 存放 `Wintab32-<hash>-<描述>-20261118.dll` 与同名 `.rs` 源码，可直接回滚。
 
 ### 7.7 遗留（已不适用，保留作历史）
