@@ -144,11 +144,18 @@ namespace OpenTabletDriver.Wintab
             tabletX = (int)Math.Round(raw.X);
             tabletY = (int)Math.Round(raw.Y);
             hasTabletPosition = true;
-            // Publishing only from Flush() relied on the pipeline calling
-            // ISynchronousPointer.Flush(), which it does not: the shared buffer
-            // stayed frozen and Wintab clients saw no packets at all. This
-            // override runs exactly once per report, so publish here instead.
-            Publish();
+
+            // Record only; Flush() publishes, once per report.
+            //
+            // This used to publish here as well, because an older pipeline never
+            // called ISynchronousPointer.Flush() and the shared buffer stayed
+            // frozen. The pipeline does call it now (STAT showed flush == reports),
+            // so publishing in both places sent TWO packets per report: Transform()
+            // runs before OnOutput() has applied this report's pressure and
+            // buttons, so the first packet of every pair carried the previous
+            // sample's pressure. Measured: pub=60339 for reports=30455 (≈2.0×),
+            // 404 samples/s into the shim for a 202 pps tablet, and twice the
+            // queue replacements that make a WTPacket(serial) consumer miss.
         }
 
         internal static int SetPressureCalls, SetPositionCalls, FlushCalls, PublishCalls;
