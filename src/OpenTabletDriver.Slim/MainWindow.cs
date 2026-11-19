@@ -185,7 +185,7 @@ namespace OpenTabletDriver.Slim
             var content = new Border
             {
                 Background = Palette.WindowBrush,
-                Padding = new Thickness(72, 20, 48, 16),
+                Padding = new Thickness(50, 20, 70, 16),
                 Child = scroll
             };
             Grid.SetColumn(content, 1);
