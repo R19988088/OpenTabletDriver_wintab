@@ -1,0 +1,54 @@
+OTD Wintab v0.9 完整包（2026-11-19）
+=====================================
+
+在 v0.8 基础上加了「显示器热插拔自动跟随」和「崩溃留痕」，压感链路没动：
+Photoshop / SAI / PhotoCraft 三个软件仍然同时有压感，全链路走 Wintab（没有用 Windows Ink）。
+
+包内容
+------
+OpenTabletDriver.Slim.exe      主程序（4E5DA54174339098，46,957,132 字节）
+data\                          配置（mapping / feel / tweaks / wacom-state / tray）
+data\Wintab32.dll              shim，兼容旧布局的位置
+WintabNative\Wintab32.dll      要装进 System32 的那一份  ← 3BC7C21E15
+shim\                          三个架构的 DLL + 源码 + Cargo.toml（想自己编就照这里）
+安装Wintab32.cmd               一键把 WintabNative\Wintab32.dll 装到 System32（会弹 UAC）
+启动.cmd                       双击启动主程序
+
+怎么装
+------
+1. 解压到任意目录，比如 D:\app\OpenTabletDriver。
+2. 双击「安装Wintab32.cmd」，弹出的 UAC 点「是」。
+   它会先把自己复制一份到 System32\Wintab32.dll，装完会打印装上的版本号。
+   期望看到：3BC7C21E15
+3. 双击「启动.cmd」。
+4. 打开 PS / SAI 各画一笔确认压感。
+
+升级/回滚
+---------
+System32 里如果有旧版，安装脚本会先把它改名成 Wintab32.pre-<时间戳>.dll，
+想回滚直接改回名字即可。
+
+v0.9 改了什么
+-------------
+1. 显示器热插拔
+   v0.8 里拔掉一块屏之后，笔只能画到屏幕的一半区域。三个原因：
+     · 注入坐标用的虚拟桌面尺寸是启动时读一次就再也不更新的；
+     · mapping.json 存的是绝对像素矩形，屏没了/变小了没人重算；
+     · 唯一会重算的计时器在映射页里，离开页面就停了。
+   现在主程序每秒比对一次显示器拓扑，变了就重读桌面尺寸、把映射区域重新铺到当前屏幕上、
+   重新下发并通知界面重画，不用重启。
+   原来铺满屏幕的映射会直接铺满新屏；普通子区域只把中心挪回屏内。
+
+2. 崩溃留痕
+   进程要是自己没了，data\ 目录里会留 crash-<PID>.log，记录异常和时间；
+   正常退出也会留一行 exit。以前进程消失时既没有事件日志也没有日志尾巴，查不出原因。
+
+自检命令
+--------
+在命令行里跑（只读，不占数位板、不改配置）：
+    OpenTabletDriver.Slim.exe --displaycheck
+结果写在 exe 旁边的 displaycheck.txt：当前显示器拓扑、虚拟桌面、当前映射区域、
+区域是否在屏内，以及"双屏铺满后拔掉一块"的模拟结果。
+
+排查记录在仓库 docs\versions.md 第七节（7.8 多显示器、7.9 热插拔映射跟随）。
+v0.8 的 tag 指向提交 97f318b，v0.9 的改动是 06fa31a / ba2cea2。

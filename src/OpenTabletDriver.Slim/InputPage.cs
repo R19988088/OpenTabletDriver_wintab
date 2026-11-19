@@ -31,9 +31,9 @@ namespace OpenTabletDriver.Slim
         private readonly SlimHost _host;
 
         private readonly TextBlock _touchStatus = new();
-        private readonly TextBlock _wacomStatus = new();
-        private readonly TextBlock _wacomResult = new();
-        private bool _wacomBusy;
+
+
+
 
         public InputPage(SlimHost host)
         {
@@ -42,7 +42,7 @@ namespace OpenTabletDriver.Slim
             RowDefinitions = new RowDefinitions(
                 "Auto,Auto,Auto,Auto,Auto,Auto,Auto," +      // 0..6 压力相关
                 "Auto,Auto,Auto,Auto,Auto," +                // 7..11 触摸控制
-                "Auto,Auto,Auto,Auto,*");                    // 12..16 Wacom 接管 + 余量
+                "*");                                        // 12 起余量
             ColumnDefinitions = new ColumnDefinitions("*,Auto");
             Margin = new Thickness(0);
 
@@ -95,43 +95,12 @@ namespace OpenTabletDriver.Slim
             SetColumnSpan(_touchStatus, 2);
             Children.Add(_touchStatus);
 
-            // ---- Wacom 接管（v34）----
-            Children.Add(SectionHeader("Wacom 接管", 12));
-
-            _wacomStatus.FontSize = 11;
-            _wacomStatus.Foreground = Palette.InkDimBrush;
-            _wacomStatus.TextWrapping = TextWrapping.Wrap;
-            _wacomStatus.Margin = new Thickness(0, 6, 0, 8);
-            SetRow(_wacomStatus, 13);
-            SetColumnSpan(_wacomStatus, 2);
-            Children.Add(_wacomStatus);
-
-            var actions = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 8,
-                Margin = new Thickness(0, 0, 0, 8)
-            };
-            actions.Children.Add(ActionButton("接管 Wacom", WacomControl.Takeover));
-            actions.Children.Add(ActionButton("恢复 Wacom", WacomControl.Restore));
-            SetRow(actions, 14);
-            SetColumnSpan(actions, 2);
-            Children.Add(actions);
-
-            _wacomResult.FontSize = 11;
-            _wacomResult.Foreground = Palette.InkDimBrush;
-            _wacomResult.TextWrapping = TextWrapping.Wrap;
-            _wacomResult.Margin = new Thickness(0, 0, 0, 8);
-            SetRow(_wacomResult, 15);
-            SetColumnSpan(_wacomResult, 2);
-            Children.Add(_wacomResult);
 
             WireEvents();
             LoadValues();
 
             UpdateStatus();
 
-            // 状态行要调用 reg.exe 读服务 Start，别刷得太勤
             var tick = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
             tick.Tick += (_, _) => UpdateStatus();
             tick.Start();
@@ -212,58 +181,8 @@ namespace OpenTabletDriver.Slim
         private void UpdateStatus()
         {
             _touchStatus.Text = "触摸：" + _host.Touch.Describe();
-
-            if (_wacomBusy)
-                return;
-
-            try
-            {
-                _wacomStatus.Text = WacomControl.Status();
-            }
-            catch
-            {
-                // 注册表/进程查询失败不该拖垮整页刷新
-            }
         }
 
-        /// <summary>接管/恢复都要提权，UAC 会卡住界面线程，所以整个动作放后台跑。</summary>
-        private Button ActionButton(string text, Func<string> action)
-        {
-            var button = new Button
-            {
-                Content = text,
-                FontSize = 12,
-                Height = 30,
-                Padding = new Thickness(14, 0, 14, 0),
-                CornerRadius = new CornerRadius(6),
-                Background = Palette.FieldBrush,
-                BorderBrush = Palette.FieldBorderBrush,
-                BorderThickness = new Thickness(1),
-                Foreground = Palette.InkSoftBrush
-            };
-
-            button.Click += (_, _) =>
-            {
-                if (_wacomBusy)
-                    return;
-
-                _wacomBusy = true;
-                _wacomResult.Text = "正在提权执行（请在系统弹窗里允许）…";
-                _wacomResult.Foreground = Palette.AccentBrush;
-
-                Task.Run(action).ContinueWith(task => Dispatcher.UIThread.Post(() =>
-                {
-                    _wacomBusy = false;
-                    _wacomResult.Text = task.Result;
-                    _wacomResult.Foreground = task.Result.StartsWith("接管完成") || task.Result.StartsWith("恢复完成")
-                        ? Palette.InkDimBrush
-                        : Palette.AccentBrush;
-                    UpdateStatus();
-                }));
-            };
-
-            return button;
-        }
 
         private Control SectionHeader(string text, int row)
         {

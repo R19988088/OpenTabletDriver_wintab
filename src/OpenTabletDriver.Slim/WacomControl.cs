@@ -38,6 +38,16 @@ namespace OpenTabletDriver.Slim
         public static string StateFile =>
             Path.Combine(AppContext.BaseDirectory, "data", "wacom-state.ini");
 
+        /// <summary>
+        /// 接管前 System32 里那份 Wintab32.dll 的留底。只有它不是本程序的 shim 时才会写这个文件，
+        /// 恢复时原样放回去；早前就已经被换成 shim 的话这台机器上本来就没有 Wacom 原版可备份。
+        /// </summary>
+        public static string DllBackup =>
+            Path.Combine(AppContext.BaseDirectory, "data", "Wintab32-before-wacom-takeover.dll");
+
+        private static string SystemDll =>
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "Wintab32.dll");
+
         /// <summary>一行状态，界面每两秒刷一次。</summary>
         public static string Status()
         {
@@ -54,29 +64,62 @@ namespace OpenTabletDriver.Slim
             var saved = SavedStart();
             parts.Add(saved == null ? "接管记录：无" : $"接管记录：原始 Start={saved.Value}");
 
+            parts.Add(DescribeDll());
+
             return string.Join(" · ", parts);
         }
 
-        /// <summary>四步接管。返回提权脚本的完整输出（成功与否都在里面）。</summary>
+        /// <summary>Wintab32.dll 一眼状态：本程序 / 别人（Wacom 原版） / 没有，再加上有没有留底。</summary>
+        private static string DescribeDll()
+        {
+            var state = WintabSetup.Detect();
+            var text = state switch
+            {
+                WintabState.Ours => "Wintab32.dll：本程序的 shim",
+                WintabState.Outdated => "Wintab32.dll：不是本程序（Wacom 原版）",
+                WintabState.Missing => "Wintab32.dll：System32 里没有",
+                _ => "Wintab32.dll：随包缺失"
+            };
+
+            text += File.Exists(DllBackup) ? "（有接管前留底）" : "（无留底）";
+            return text;
+        }
+
+        /// <summary>四步接管 + 换 Wintab32.dll。返回提权脚本的完整输出（成功与否都在里面）。</summary>
         public static string Takeover()
         {
+            // 随包 shim 缺了就先用内嵌那份释放出来，接管时要拿它覆盖 System32
+            WintabSetup.EnsureLocal();
+
             var text = RunElevated(TakeoverScript(), "otd-wacom-takeover");
             if (string.IsNullOrWhiteSpace(text))
                 return "接管失败：没有拿到执行结果（UAC 可能被拒绝，或被安全软件拦下）。";
 
-            return (text.Contains("DONE OK") ? "接管完成。" : "接管未完成。")
-                + Environment.NewLine + text.Trim();
+            var served = text.Contains("DONE OK");
+            var dll = text.Contains("DLL OURS");
+            var verdict = served && dll
+                ? "接管完成：服务已禁用、进程已清、Wintab32.dll 已换成本程序的。"
+                : "接管未完成，看下面哪一步没成。";
+
+            return verdict + Environment.NewLine + text.Trim();
         }
 
-        /// <summary>按 data\wacom-state.ini 把服务写回去并启动。</summary>
+        /// <summary>按 data\wacom-state.ini 把服务写回去并启动，并把接管前的 Wintab32.dll 还回去。</summary>
         public static string Restore()
         {
             var text = RunElevated(RestoreScript(), "otd-wacom-restore");
             if (string.IsNullOrWhiteSpace(text))
                 return "恢复失败：没有拿到执行结果（UAC 可能被拒绝，或被安全软件拦下）。";
 
-            return (text.Contains("DONE OK") ? "恢复完成。" : "恢复未完成。")
-                + Environment.NewLine + text.Trim();
+            var served = text.Contains("DONE OK");
+            var dll = text.Contains("DLL RESTORED");
+            var verdict = served && dll
+                ? "恢复完成：服务已按原值启动，Wintab32.dll 已还原为接管前那份。"
+                : served && text.Contains("DLL NO-BACKUP")
+                    ? "服务已恢复；Wintab32.dll 没有留底（接管前就已换成本程序 shim，机器上没有 Wacom 原版），保持现状。"
+                    : "恢复未完成，看下面哪一步没成。";
+
+            return verdict + Environment.NewLine + text.Trim();
         }
 
         private static string DescribeStart(int start) => start switch
@@ -188,17 +231,20 @@ namespace OpenTabletDriver.Slim
         {
             var log = LogPath("otd-wacom-takeover");
             var state = StateFile;
+            var shim = WintabSetup.LocalDll;
+            var backup = DllBackup;
 
             return $$"""
                 $svc = '{{ServiceName}}'
                 $state = '{{Escape(state)}}'
                 $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\' + $svc
+                $shim = '{{Escape(shim)}}'
+                $backup = '{{Escape(backup)}}'
+                $sys = Join-Path $env:SystemRoot 'System32\Wintab32.dll'
                 $lines = @()
 
                 function Get-WacomProc {
-                    Get-Process | Where-Object {
-                        ($_.ProcessName -like 'Wacom*' -or $_.ProcessName -like 'ExpressKey*') -and $_.Id -ne $PID
-                    }
+                    Get-Process | Where-Object { ($_.ProcessName -like 'Wacom*' -or $_.ProcessName -like 'ExpressKey*' -or $_.ProcessName -like '*TabletUser*') -and $_.Id -ne $PID }
                 }
 
                 # 1. 先杀用户态进程
@@ -234,9 +280,42 @@ namespace OpenTabletDriver.Slim
                     $procs | Stop-Process -Force
                 }
 
-                # 4. 回读 Start 确认
+                # 4. Wintab32.dll：先把"不是本程序的"那份留底，再换成我们的 shim
+                if (Test-Path -LiteralPath $shim) {
+                    $shimHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $shim).Hash
+                    if (Test-Path -LiteralPath $sys) {
+                        $sysHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sys).Hash
+                        if ($sysHash -ne $shimHash -and -not (Test-Path -LiteralPath $backup)) {
+                            $dir = Split-Path -Parent $backup
+                            if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+                            Copy-Item -LiteralPath $sys -Destination $backup -Force
+                            $lines += 'DLL BACKUP ok'
+                        }
+                    }
+                    try {
+                        Copy-Item -LiteralPath $shim -Destination $sys -Force
+                    } catch {
+                        # System32 里那份可能正被 PS/SAI 加载，映像文件允许改名
+                        try {
+                            Move-Item -LiteralPath $sys -Destination ($sys + '.old') -Force
+                            Copy-Item -LiteralPath $shim -Destination $sys -Force
+                        } catch {
+                            $lines += 'DLL COPY FAIL ' + $_.Exception.Message
+                        }
+                    }
+                    if (Test-Path -LiteralPath $sys) {
+                        $nowHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sys).Hash
+                        $lines += $(if ($nowHash -eq $shimHash) { 'DLL OURS' } else { 'DLL MISMATCH' })
+                    }
+                } else {
+                    $lines += 'DLL NO-SHIM'
+                }
+
+                # 5. 回读 Start 确认
                 $now = (Get-ItemProperty -LiteralPath $key -Name Start).Start
                 $lines += 'START ' + $now
+                $left = @(Get-WacomProc).Count
+                $lines += 'PROCS ' + $left
                 $lines += $(if ($now -eq 4) { 'DONE OK' } else { 'DONE NOT-DISABLED' })
 
                 $lines | Set-Content -LiteralPath $log -Encoding utf8
@@ -247,14 +326,17 @@ namespace OpenTabletDriver.Slim
         {
             var log = LogPath("otd-wacom-restore");
             var state = StateFile;
+            var backup = DllBackup;
 
             return $$"""
                 $svc = '{{ServiceName}}'
                 $state = '{{Escape(state)}}'
+                $backup = '{{Escape(backup)}}'
                 $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\' + $svc
+                $sys = Join-Path $env:SystemRoot 'System32\Wintab32.dll'
                 $lines = @()
 
-                # 没记录就按 Wacom 驱动的默认值（自动）恢复
+                # 1. 服务按接管前的 Start 值写回去并启起来
                 $start = 2
                 if (Test-Path -LiteralPath $state) {
                     $line = Get-Content -LiteralPath $state |
@@ -268,6 +350,30 @@ namespace OpenTabletDriver.Slim
                 $lines += 'CFG ' + $out.Trim()
                 $out = (& sc.exe start $svc) 2>&1 | Out-String
                 $lines += 'RUN ' + $out.Trim()
+
+                # 2. Wintab32.dll：把接管前留底的那份放回去（有的话）
+                if (Test-Path -LiteralPath $backup) {
+                    try {
+                        Copy-Item -LiteralPath $backup -Destination $sys -Force
+                    } catch {
+                        try {
+                            if (Test-Path -LiteralPath $sys) {
+                                Move-Item -LiteralPath $sys -Destination ($sys + '.old') -Force
+                            }
+                            Copy-Item -LiteralPath $backup -Destination $sys -Force
+                        } catch {
+                            $lines += 'DLL RESTORE FAIL ' + $_.Exception.Message
+                        }
+                    }
+                    if (Test-Path -LiteralPath $sys) {
+                        $backHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $backup).Hash
+                        $nowHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sys).Hash
+                        $lines += $(if ($nowHash -eq $backHash) { 'DLL RESTORED' } else { 'DLL MISMATCH' })
+                    }
+                } else {
+                    # 没有留底：说明接管前本来就是我们自己的 shim，机器上没有 Wacom 原版可还
+                    $lines += 'DLL NO-BACKUP'
+                }
 
                 $now = (Get-ItemProperty -LiteralPath $key -Name Start).Start
                 $lines += 'START ' + $now

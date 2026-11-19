@@ -1,0 +1,18 @@
+{
+  "DisplayDevice": "\\\\.\\DISPLAY1",
+  "DisplayWidth": 3840,
+  "DisplayHeight": 2160,
+  "DisplayX": 1920,
+  "DisplayY": 1080,
+  "TabletWidth": 224,
+  "TabletHeight": 126,
+  "TabletX": 112,
+  "TabletY": 63,
+  "TabletRotation": 0,
+  "ButtonsOnRight": false,
+  "DigitizerWidth": 224,
+  "DigitizerHeight": 148,
+  "LockAspectRatio": true,
+  "EnableClipping": true,
+  "DisplayRatio": 1.7777777777777777
+}

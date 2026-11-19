@@ -1,0 +1,10 @@
+{
+  "DeadZone": 0,
+  "Elasticity": 6.8,
+  "StrokeFilter": 2,
+  "MaxPressure": 0.67,
+  "InputMode": "winTab",
+  "TouchUndo": false,
+  "TouchRotate": false,
+  "TouchZoom": false
+}

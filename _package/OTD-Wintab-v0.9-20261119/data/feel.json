@@ -1,0 +1,7 @@
+{
+  "DeadZone": 0,
+  "Elasticity": 1.2,
+  "StrokeFilter": 6,
+  "MaxPressure": 0.74,
+  "InputMode": "winTab"
+}

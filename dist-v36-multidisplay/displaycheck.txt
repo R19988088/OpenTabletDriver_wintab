@@ -1,0 +1,6 @@
+显示器数量  : 1
+  DISPLAY1  3840x2160 at (0,0)  主屏
+虚拟桌面    : 3840x2160
+当前映射    : display=3840x2160@1920,1080 device=\\.\DISPLAY1
+区域在屏内  : 是
+模拟拔屏后  : changed=True display=3840x2160@1920,1080 tablet=224.0x126.0

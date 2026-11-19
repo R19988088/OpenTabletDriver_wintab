@@ -29,10 +29,15 @@ namespace OpenTabletDriver.Slim
 
         private readonly Tweaks _config = HotkeyEngine.Config;
         private readonly TextBlock _status = new();
+        private readonly TextBlock _wacomStatus = new();
+        private readonly TextBlock _wacomResult = new();
+        private bool _wacomBusy;
 
         public TweaksPage()
         {
-            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*");
+            RowDefinitions = new RowDefinitions(
+                "Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto," + // 0..11 开关/状态/按钮
+                "Auto,Auto,Auto,Auto,*");                                        // 12..15 Wacom 接管 + 余量
             ColumnDefinitions = new ColumnDefinitions("*,Auto");
 
             for (var i = 0; i < Rows.Length; i++)
@@ -79,9 +84,56 @@ namespace OpenTabletDriver.Slim
             SetColumnSpan(actions, 2);
             Children.Add(actions);
 
+            // ---- Wacom 接管：完整的暂停（服务 + 进程 + Wintab32.dll）与恢复 ----
+            var wacomHeader = new TextBlock
+            {
+                Text = "Wacom 接管（暂停 = 停服务、清进程、换成本程序的 Wintab32.dll）",
+                FontSize = 14,
+                Foreground = Palette.InkBrush,
+                Margin = new Thickness(0, 18, 0, 4)
+            };
+            SetRow(wacomHeader, 12);
+            SetColumnSpan(wacomHeader, 2);
+            Children.Add(wacomHeader);
+
+            _wacomStatus.FontSize = 11;
+            _wacomStatus.Foreground = Palette.InkDimBrush;
+            _wacomStatus.TextWrapping = TextWrapping.Wrap;
+            _wacomStatus.Margin = new Thickness(0, 2, 0, 8);
+            SetRow(_wacomStatus, 13);
+            SetColumnSpan(_wacomStatus, 2);
+            Children.Add(_wacomStatus);
+
+            var wacomActions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            wacomActions.Children.Add(WacomButton("接管 Wacom", WacomControl.Takeover));
+            wacomActions.Children.Add(WacomButton("恢复 Wacom", WacomControl.Restore));
+            SetRow(wacomActions, 14);
+            SetColumnSpan(wacomActions, 2);
+            Children.Add(wacomActions);
+
+            _wacomResult.FontSize = 11;
+            _wacomResult.Foreground = Palette.InkDimBrush;
+            _wacomResult.TextWrapping = TextWrapping.Wrap;
+            _wacomResult.Margin = new Thickness(0, 0, 0, 8);
+            SetRow(_wacomResult, 15);
+            SetColumnSpan(_wacomResult, 2);
+            Children.Add(_wacomResult);
+
             UpdateStatus();
+            UpdateWacomStatus();
+
             var tick = new Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-            tick.Tick += (_, _) => UpdateStatus();
+            tick.Tick += (_, _) =>
+            {
+                UpdateStatus();
+                if (_ticks % 5 == 0)
+                    UpdateWacomStatus();
+            };
             tick.Start();
         }
 
@@ -131,6 +183,61 @@ namespace OpenTabletDriver.Slim
             SetRow(toggle, row);
             SetColumn(toggle, 1);
             return toggle;
+        }
+
+        /// <summary>接管/恢复都要提权，UAC 会卡住界面线程，所以整个动作放后台跑。</summary>
+        private Button WacomButton(string text, Func<string> action)
+        {
+            var button = new Button
+            {
+                Content = text,
+                FontSize = 12,
+                Height = 30,
+                Padding = new Thickness(14, 0, 14, 0),
+                CornerRadius = new CornerRadius(6),
+                Background = Palette.FieldBrush,
+                BorderBrush = Palette.FieldBorderBrush,
+                BorderThickness = new Thickness(1),
+                Foreground = Palette.InkSoftBrush
+            };
+
+            button.Click += (_, _) =>
+            {
+                if (_wacomBusy)
+                    return;
+
+                _wacomBusy = true;
+                _wacomResult.Text = "正在提权执行（请在系统弹窗里允许）…";
+                _wacomResult.Foreground = Palette.AccentBrush;
+
+                System.Threading.Tasks.Task.Run(action).ContinueWith(task => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                {
+                    _wacomBusy = false;
+                    _wacomResult.Text = task.Result;
+                    _wacomResult.Foreground = task.Result.StartsWith("接管完成") || task.Result.StartsWith("恢复完成")
+                        ? Palette.InkDimBrush
+                        : Palette.AccentBrush;
+                    UpdateWacomStatus();
+                }));
+            };
+
+            return button;
+        }
+
+        /// <summary>服务 Start 要调 reg.exe，5 秒刷一次就够。</summary>
+        private void UpdateWacomStatus()
+        {
+            if (_wacomBusy)
+                return;
+
+            try
+            {
+                _wacomStatus.Text = WacomControl.Status();
+            }
+            catch
+            {
+                // 注册表/进程查询失败不该拖垮整页刷新
+            }
         }
 
         private void UpdateStatus()
