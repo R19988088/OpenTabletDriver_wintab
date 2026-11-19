@@ -143,6 +143,10 @@ namespace OpenTabletDriver.Slim
                 // 触摸/环：同一根读取线程上的旁路，不单独开 HID，也不会和笔抢接口
                 mode.ReportReceived += report => Touch.Feed(report);
                 Mapping.EnsureDefaults(digitizer.Width, digitizer.Height);
+
+                // 上次退出时屏已拔掉、mapping.json 里留着比屏幕还大的区域：
+                // 启动时先按当前拓扑修一次，别让旧值带着跑
+                Mapping.RefitToDisplays();
                 Mapping.Save();
                 mode.Tablet = tree.CreateReference();
                 // WintabOutputMode 的 Pointer 会把原生指针包成 WintabPointer，

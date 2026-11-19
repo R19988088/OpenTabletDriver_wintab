@@ -19,7 +19,8 @@ namespace OpenTabletDriver.Slim
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
                 desktop.MainWindow = new MainWindow();
-                desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
+                // 点 X 只隐藏到托盘，窗口没了不能顺手把进程带走
+                desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
             }
 
             base.OnFrameworkInitializationCompleted();

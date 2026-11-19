@@ -30,6 +30,9 @@ namespace OpenTabletDriver.Slim
 
         private bool _outputStarted;
         private bool _installing;
+        private TrayIcon? _tray;
+        /// <summary>托盘菜单里的“退出”才让它真的走 Closing 的退出路径。</summary>
+        private bool _quitting;
 
         public MainWindow()
         {
@@ -49,6 +52,7 @@ namespace OpenTabletDriver.Slim
 
             Content = BuildShell();
             ShowPage(Program.StartupPage ?? "输入");
+            CreateTray();
 
             _host.StateChanged += () => Dispatcher.UIThread.Post(Refresh);
 
@@ -79,8 +83,26 @@ namespace OpenTabletDriver.Slim
 
             // 关闭必须保证进程真的退出：释放设备可能卡住（USB 读阻塞），
             // 一旦卡住就变成"关不掉的后台进程"，所以 300ms 后无条件强退。
-            Closing += (_, _) =>
+            Closing += (_, e) =>
             {
+                // 点 X 只是收进托盘：驱动、全局钩子和设备都得继续跑，
+                // 真正退出只有托盘菜单里的“退出”。
+                if (!_quitting)
+                {
+                    if (_tray != null)
+                    {
+                        e.Cancel = true;
+                        Hide();
+                        return;
+                    }
+
+                    // 托盘没建起来就别藏了：藏了就再也没法把窗口叫回来，
+                    // 用户会看到"点 X 之后进程还在"
+                    _quitting = true;
+                }
+
+                try { _tray?.Dispose(); } catch { }
+
                 new System.Threading.Thread(() =>
                 {
                     System.Threading.Thread.Sleep(300);
@@ -105,6 +127,47 @@ namespace OpenTabletDriver.Slim
             tick.Start();
 
             Refresh();
+        }
+
+        private void CreateTray()
+        {
+            try
+            {
+                var icon = System.IO.Path.Combine(AppContext.BaseDirectory, "data", "tray.ico");
+                _tray = new TrayIcon { ToolTipText = "OTD Slim", IsVisible = true };
+                if (System.IO.File.Exists(icon))
+                    _tray.Icon = new WindowIcon(icon);
+
+                var open = new NativeMenuItem("打开面板");
+                open.Click += (_, _) => ShowFromTray();
+                var quit = new NativeMenuItem("退出");
+                quit.Click += (_, _) => QuitFromTray();
+
+                var menu = new NativeMenu();
+                menu.Add(open);
+                menu.Add(new NativeMenuItemSeparator());
+                menu.Add(quit);
+                _tray.Menu = menu;
+            }
+            catch
+            {
+                // 托盘建不出来不影响主功能，只是点 X 之后没法再唤回窗口
+                _tray = null;
+            }
+        }
+
+        private void ShowFromTray()
+        {
+            Show();
+            if (WindowState == WindowState.Minimized)
+                WindowState = WindowState.Normal;
+            Activate();
+        }
+
+        private void QuitFromTray()
+        {
+            _quitting = true;
+            Close();
         }
 
         private Control BuildShell()

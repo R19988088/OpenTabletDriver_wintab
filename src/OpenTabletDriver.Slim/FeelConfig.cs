@@ -21,6 +21,13 @@ namespace OpenTabletDriver.Slim
         public double MaxPressure { get; set; } = 1.0;
         public string InputMode { get; set; } = "winTab";
 
+        /// <summary>
+        /// 点距（毫米）。0 = 关闭，保持 Wacom 原版的时间采样出点（每 5 ms 一个包）；
+        /// 大于 0 时 wintab-shim 在相邻两包之间按等弧长补点，出点间距不再随速度变化。
+        /// 保留这个字段是为了让本程序写回 feel.json 时不把用户手填的 Spacing 抹掉。
+        /// </summary>
+        public double Spacing { get; set; }
+
         // 「输入」页底部那三个触摸开关。只由本程序写，wintab-shim 不读它们，
         // 开关状态直接决定 TouchEngine 要不要把对应手势翻译成按键。
         public bool TouchUndo { get; set; } = true;
