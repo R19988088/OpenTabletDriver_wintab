@@ -160,6 +160,68 @@ namespace OpenTabletDriver.Slim
                 LockTabletToDisplay();
         }
 
+        /// <summary>
+        /// 显示器拓扑变了之后把区域拉回现实：那块屏没了就退回主屏铺满；
+        /// 屏还在但分辨率/位置变了：原来铺满屏幕的直接铺满新屏，其余只把中心挪回屏内。
+        /// 返回 true 表示改过，调用方要保存并重新下发。
+        /// </summary>
+        public bool RefitToDisplays()
+        {
+            var all = Displays.Enum();
+            if (all.Count == 0)
+                return false;
+
+            var display = Displays.Find(DisplayDevice);
+            if (display == null)
+            {
+                FillDisplay(Displays.Primary() ?? all[0]);
+                return true;
+            }
+
+            if (DisplayWidth > 0 && DisplayHeight > 0 && IsInside(display))
+                return false;
+
+            var target = display;
+
+            // 原来就是"铺满整块屏"的映射（双屏时经常是铺满整个虚拟桌面），现在屏变了
+            // 就直接铺满新屏。按比例缩会把 32:9 的区域压成屏幕中间一条，
+            // 板子又只剩一半能用，等于没修。
+            if (DisplayWidth <= 0 || DisplayHeight <= 0
+                || DisplayWidth >= target.Width || DisplayHeight >= target.Height)
+            {
+                FillDisplay(target);
+                return true;
+            }
+
+            // 区域比屏还宽/高，但没到"铺满"的程度：只把中心挪回屏内，尺寸不动，
+            // 超出部分靠 EnableClipping 夹住，和用户在映射页看到的效果一致。
+            var minX = target.X + DisplayWidth / 2.0;
+            var maxX = target.X + target.Width - DisplayWidth / 2.0;
+            var minY = target.Y + DisplayHeight / 2.0;
+            var maxY = target.Y + target.Height - DisplayHeight / 2.0;
+
+            DisplayX = DisplayWidth >= target.Width ? target.X + target.Width / 2.0 : Math.Clamp(DisplayX, minX, maxX);
+            DisplayY = DisplayHeight >= target.Height ? target.Y + target.Height / 2.0 : Math.Clamp(DisplayY, minY, maxY);
+
+            if (LockAspectRatio)
+                LockTabletToDisplay();
+
+            return true;
+        }
+
+        /// <summary>区域是否完整落在该显示器矩形内（留 1px 容差，避免四舍五入来回抖）。</summary>
+        private bool IsInside(Displays.Info display)
+        {
+            var left = DisplayX - DisplayWidth / 2.0;
+            var top = DisplayY - DisplayHeight / 2.0;
+            var right = DisplayX + DisplayWidth / 2.0;
+            var bottom = DisplayY + DisplayHeight / 2.0;
+
+            return left >= display.X - 1 && top >= display.Y - 1
+                && right <= display.X + display.Width + 1
+                && bottom <= display.Y + display.Height + 1;
+        }
+
         private static Displays.Info? FirstDisplay()
         {
             var all = Displays.Enum();

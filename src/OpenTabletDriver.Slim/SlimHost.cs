@@ -30,6 +30,12 @@ namespace OpenTabletDriver.Slim
         public event Action<string>? LogReceived;
         public event Action? StateChanged;
 
+        /// <summary>显示器拓扑变了（插拔屏、改分辨率）；界面页要跟着重画。</summary>
+        public event Action? DisplaysChanged;
+
+        private IReadOnlyList<Displays.Info> _displays = Displays.Enum();
+        private System.Threading.Timer? _displayWatch;
+
         public int ConfigCount { get; }
         public int DeviceCount { get; private set; }
         public IReadOnlyList<string> Devices { get; private set; } = [];
@@ -139,7 +145,6 @@ namespace OpenTabletDriver.Slim
                 Mapping.EnsureDefaults(digitizer.Width, digitizer.Height);
                 Mapping.Save();
                 mode.Tablet = tree.CreateReference();
-
                 // WintabOutputMode 的 Pointer 会把原生指针包成 WintabPointer，
                 // 它同时实现 IPenActionHandler：按键走它才能同步到 Wintab 共享内存。
                 if (mode.Pointer is IPenActionHandler penActionHandler)
@@ -151,6 +156,7 @@ namespace OpenTabletDriver.Slim
                 tree.OutputMode = mode;
                 _outputMode = mode;
                 ApplyMapping();
+                StartDisplayWatch();
 
                 OutputState = native is WindowsPointer pointer
                     ? $"运行中 · 屏幕 {pointer.ScreenSize.X:0}x{pointer.ScreenSize.Y:0} · 数位板 {Mapping.TabletWidth:0.#}x{Mapping.TabletHeight:0.#}mm"
@@ -196,6 +202,70 @@ namespace OpenTabletDriver.Slim
             : $"按键：按下 {_buttons.PressCount} / 抬起 {_buttons.ReleaseCount} · 报文 {_buttons.ReportCount} · 峰值压力 {_buttons.MaxPressure}";
 
         /// <summary>
+        /// 显示器热插拔不能只刷新界面文字，三样东西都得跟着重算：
+        ///   · WindowsPointer 缓存的虚拟桌面尺寸/原点（注入坐标按它归一化，
+        ///     拔掉一块屏后还用旧值，笔就只覆盖屏幕的一部分）
+        ///   · mapping.json 的显示器区域（那块屏没了或变小了就重新铺）
+        ///   · 输出管线的 Area（ApplyMapping 重新下发）
+        /// 每秒比对一次拓扑，变了就按新拓扑重算，不用重启程序。
+        /// </summary>
+        private void StartDisplayWatch()
+        {
+            _displayWatch ??= new System.Threading.Timer(
+                _ => WatchDisplays(), null, 1000, 1000);
+        }
+
+        public void WatchDisplays()
+        {
+            try
+            {
+                var now = Displays.Enum();
+                if (SameTopology(now, _displays))
+                    return;
+
+                _displays = now;
+                Log.Write(nameof(SlimHost), "显示器变化：" + DescribeTopology(now), LogLevel.Info);
+
+                (_pointer as WindowsPointer)?.RefreshScreen();
+
+                if (Mapping.RefitToDisplays())
+                {
+                    Mapping.Save();
+                    ApplyMapping();
+                }
+
+                DisplaysChanged?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Log.Exception(ex);
+            }
+        }
+
+        private static bool SameTopology(IReadOnlyList<Displays.Info> a, IReadOnlyList<Displays.Info> b)
+        {
+            if (a.Count != b.Count)
+                return false;
+
+            for (var i = 0; i < a.Count; i++)
+            {
+                if (!string.Equals(a[i].Device, b[i].Device, StringComparison.OrdinalIgnoreCase)
+                    || a[i].X != b[i].X || a[i].Y != b[i].Y
+                    || a[i].Width != b[i].Width || a[i].Height != b[i].Height
+                    || a[i].Primary != b[i].Primary)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static string DescribeTopology(IReadOnlyList<Displays.Info> list) =>
+            string.Join(" | ", list.Select(d =>
+                $"{d.Device.Replace(@"\\.\", "")} {d.Width}x{d.Height}@({d.X},{d.Y}){(d.Primary ? " 主屏" : "")}"));
+
+        /// <summary>
         /// 端到端验证点击链路：用替身指针跑完整管线，喂真实语义的报文 ——
         /// 笔尖靠压力触发（不是 PenButtons 位），侧键才是 PenButtons。
         /// 不依赖真实硬件，也不会点桌面。
@@ -233,6 +303,56 @@ namespace OpenTabletDriver.Slim
                 $"结论        : {(pass ? "点击链路通（笔尖走压力、侧键走按键位）" : "点击链路断开")}");
         }
 
+
+        /// <summary>
+        /// 命令行验收：打印当前显示器拓扑 + 映射区域，再拿"双屏铺满、然后拔掉一块"
+        /// 这组数值跑一遍 RefitToDisplays，看区域会不会被拉回单屏范围内。
+        /// </summary>
+        public static string RunDisplayCheck()
+        {
+            var list = Displays.Enum();
+            var lines = new List<string> { $"显示器数量  : {list.Count}" };
+
+            foreach (var d in list)
+            {
+                lines.Add($"  {d.Device.Replace(@"\\.\", "")}  {d.Width}x{d.Height} at ({d.X},{d.Y}){(d.Primary ? "  主屏" : "")}");
+            }
+
+            var pointer = new WindowsPointer();
+            lines.Add($"虚拟桌面    : {pointer.ScreenSize.X:0}x{pointer.ScreenSize.Y:0}");
+
+            var cfg = MappingConfig.Load();
+            lines.Add($"当前映射    : display={cfg.DisplayWidth:0}x{cfg.DisplayHeight:0}@{cfg.DisplayX:0},{cfg.DisplayY:0} device={cfg.DisplayDevice}");
+            lines.Add($"区域在屏内  : {(Displays.Find(cfg.DisplayDevice) is { } target && IsInsideFor(cfg, target) ? "是" : "否/查不到该屏")}");
+
+            // 模拟：双屏时区域铺满 7680x2160，然后是拔掉右屏（只剩 3840x2160）
+            var sim = new MappingConfig
+            {
+                DisplayDevice = cfg.DisplayDevice,
+                DisplayWidth = 7680,
+                DisplayHeight = 2160,
+                DisplayX = 3840,
+                DisplayY = 1080,
+                TabletWidth = cfg.TabletWidth,
+                TabletHeight = cfg.TabletHeight,
+                TabletX = cfg.TabletX,
+                TabletY = cfg.TabletY,
+                DigitizerWidth = cfg.DigitizerWidth,
+                DigitizerHeight = cfg.DigitizerHeight,
+                LockAspectRatio = cfg.LockAspectRatio
+            };
+
+            var changed = sim.RefitToDisplays();
+            lines.Add($"模拟拔屏后  : changed={changed} display={sim.DisplayWidth:0}x{sim.DisplayHeight:0}@{sim.DisplayX:0},{sim.DisplayY:0} tablet={sim.TabletWidth:0.0}x{sim.TabletHeight:0.0}");
+
+            return string.Join(Environment.NewLine, lines);
+        }
+
+        private static bool IsInsideFor(MappingConfig cfg, Displays.Info display) =>
+            cfg.DisplayX - cfg.DisplayWidth / 2.0 >= display.X - 1
+            && cfg.DisplayY - cfg.DisplayHeight / 2.0 >= display.Y - 1
+            && cfg.DisplayX + cfg.DisplayWidth / 2.0 <= display.X + display.Width + 1
+            && cfg.DisplayY + cfg.DisplayHeight / 2.0 <= display.Y + display.Height + 1;
 
         private void DetectWintabShim()
         {
@@ -424,6 +544,8 @@ namespace OpenTabletDriver.Slim
         public void Dispose()
         {
             Log.Output -= OnLogMessage;
+            _displayWatch?.Dispose();
+            _displayWatch = null;
             _outputMode?.Dispose();
             _driver.Dispose();
             _services.Dispose();

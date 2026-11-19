@@ -79,9 +79,6 @@ namespace OpenTabletDriver.Slim
             SyncEditors();
             UpdatePills();
 
-            _displayWatch.Tick += (_, _) => RefreshDisplays();
-            _displayWatch.Start();
-            DetachedFromVisualTree += (_, _) => _displayWatch.Stop();
 
             // 数位板/输出启动之后默认值才有，界面要跟着再同步一次
             _host.StateChanged += () => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
@@ -89,10 +86,16 @@ namespace OpenTabletDriver.Slim
                 _displays = Displays.Enum();
                 SyncEditors();
             });
+
+            // 显示器热插拔：Host 那边已经把窗口尺寸和映射都重算完了，这里只负责重画
+            _host.DisplaysChanged += () => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                _displays = Displays.Enum();
+                SyncEditors();
+                UpdatePills();
+            });
         }
 
-        private readonly Avalonia.Threading.DispatcherTimer _displayWatch =
-            new() { Interval = TimeSpan.FromSeconds(2) };
 
         private void WireEvents()
         {
@@ -149,40 +152,6 @@ namespace OpenTabletDriver.Slim
                 SyncTabletEditor();
                 Commit();
             };
-        }
-
-        /// <summary>显示器热插拔：面板开着的时候再接一块屏，画布要自己长出来。</summary>
-        private void RefreshDisplays()
-        {
-            var list = Displays.Enum();
-
-            var changed = list.Count != _displays.Count;
-            if (!changed)
-            {
-                for (var i = 0; i < list.Count; i++)
-                {
-                    var a = list[i];
-                    var b = _displays[i];
-                    if (!string.Equals(a.Device, b.Device, StringComparison.OrdinalIgnoreCase) ||
-                        a.Width != b.Width || a.Height != b.Height || a.X != b.X || a.Y != b.Y)
-                    {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!changed)
-                return;
-
-            _displays = list;
-
-            // 配置里那块屏没了：退回主显示器并铺满它
-            if (list.Count > 0 && Displays.Find(_config.DisplayDevice) == null)
-                _config.FillDisplay(Displays.Primary() ?? list[0]);
-
-            SyncEditors();
-            Commit();
         }
 
         private (double X, double Y, double W, double H) DesktopBounds()

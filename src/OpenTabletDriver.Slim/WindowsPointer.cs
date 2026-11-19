@@ -27,6 +27,18 @@ namespace OpenTabletDriver.Slim
 
         public WindowsPointer()
         {
+            RefreshScreen();
+        }
+
+        public Vector2 ScreenSize { get; private set; }
+        private Vector2 Origin { get; set; }
+
+        /// <summary>
+        /// 重新读虚拟桌面尺寸和原点。显示器热插拔之后必须重读，否则注入坐标还按旧桌面
+        /// 归一化，笔会只覆盖屏幕的一部分（拔掉一块屏后正好“板子只能用一半”）。
+        /// </summary>
+        public void RefreshScreen()
+        {
             var width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
             var height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
             if (width <= 0) width = GetSystemMetrics(SM_CXSCREEN);
@@ -37,9 +49,6 @@ namespace OpenTabletDriver.Slim
             ScreenSize = new Vector2(width, height);
             Origin = new Vector2(GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
         }
-
-        public Vector2 ScreenSize { get; }
-        private readonly Vector2 Origin;
 
         private Vector2 pending;
         private bool hasPending;

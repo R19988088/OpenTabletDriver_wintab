@@ -179,3 +179,34 @@ git -C "E:\000 app\OpenTabletDriver\_archive" checkout v33
 （46,940,767 字节，目录里的两个 `.pdb` 是符号，发布后删掉。）
 
 当前现场：exe `592AE8F6140B6391`，shim `3BC7C21E15`（x64）/ `98686D88A5`（x86）。
+### 7.9 热插拔之后映射不跟随（2026-11-19）
+
+现象：双屏开着时能画，关掉一块屏后板子只能用一半区域。
+
+三个原因叠在一起：
+1. `WindowsPointer` 的 `ScreenSize` / `Origin` 是构造函数里读一次的 `readonly`，注入坐标一直按旧虚拟桌面归一化；
+   拔屏后 `MOUSEEVENTF_VIRTUALDESK` 的坐标被夹到旧范围，表现就是半个板子没反应。
+2. `mapping.json` 的显示器区域是**绝对像素矩形**，屏没了/变小了没人重算；区域比剩下来的屏还大，
+   多出来的部分全被裁掉 ⇒ 只剩一半能用。
+3. 会重算的只有映射页自己的 2 秒轮询，那个计时器在离开页面时就 `Stop()` 了，所以"界面刷新了、映射没跟上"。
+
+修法（`SlimHost.WatchDisplays()`，1 秒比对一次拓扑）：
+- `WindowsPointer.RefreshScreen()` 重读虚拟桌面尺寸与原点；
+- `MappingConfig.RefitToDisplays()`：那块屏没了 → 退回主屏铺满；原来就是铺满屏幕/比屏幕大的 → 直接铺满新屏
+  （不能按比例缩，32:9 压成 16:9 会变成中间一条，还是半个板子）；只有普通子区域才只把中心挪回屏内；
+- 改过就 `Save()` + `ApplyMapping()` 重新下发 Area，并 `DisplaysChanged` 通知界面重画；
+- 映射页不再自己轮询，改订阅 `DisplaysChanged`，避免和 Host 抢着写 `mapping.json`。
+
+自检命令：`OpenTabletDriver.Slim.exe --displaycheck`（只读，写在 exe 旁边的 `displaycheck.txt`），
+实测输出（单屏 3840x2160，模拟"双屏铺满 7680x2160 后拔掉右屏"）：
+
+```
+显示器数量  : 1
+  DISPLAY1  3840x2160 at (0,0)  主屏
+虚拟桌面    : 3840x2160
+当前映射    : display=3840x2160@1920,1080 device=\\.\DISPLAY1
+区域在屏内  : 是
+模拟拔屏后  : changed=True display=3840x2160@1920,1080 tablet=224.0x126.0
+```
+
+当前现场：exe `D4635874ECB5CC3F`（46,957,132 字节），shim `3BC7C21E15`。

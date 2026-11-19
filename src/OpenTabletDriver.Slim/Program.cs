@@ -52,6 +52,12 @@ namespace OpenTabletDriver.Slim
                 WriteReport("wacom-restore.txt", WacomControl.Restore());
                 return;
             }
+            // 显示器拓扑 + 映射区域自检（只读，不占设备、不改 mapping.json）
+            if (mode == "--displaycheck")
+            {
+                WriteReport("displaycheck.txt", SlimHost.RunDisplayCheck());
+                return;
+            }
 
             // 单实例：后开的留下，先开的自己退出（旧版本直接结束掉）
             Instances.EnforceSingle();
@@ -89,6 +95,7 @@ namespace OpenTabletDriver.Slim
                 WriteReport("feeltest.txt", SlimHost.RunFeelTest());
                 return;
             }
+
 
             // 触摸/环验收：接上输出跑几秒，只统计报文种类（不开界面、不点桌面）
             if (mode == "--touchdump")
