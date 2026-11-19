@@ -9,6 +9,8 @@
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <AssemblyName>OpenTabletDriver.Slim</AssemblyName>
     <RootNamespace>OpenTabletDriver.Slim</RootNamespace>
+    <!-- exe 自己的图标（资源管理器/任务栏看到的那一个） -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,6 +30,8 @@
 
   <ItemGroup>
     <None Include="app.manifest" />
+    <!-- 同一个图标再嵌一份，单文件 exe 也能给窗口和托盘用 -->
+    <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
   </ItemGroup>
 
   <ItemGroup>

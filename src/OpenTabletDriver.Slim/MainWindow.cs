@@ -45,6 +45,11 @@ namespace OpenTabletDriver.Slim
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Background = Palette.WindowBrush;
 
+            // 窗口和托盘共用同一张图：有随包 data\tray.ico 就用它，单文件部署时退回内嵌那份
+            var icon = AppIcon();
+            if (icon != null)
+                Icon = icon;
+
             // 全局热键钩子要在建页面之前起来，页面拿的是同一份配置
             // 自启项的路径永远跟当前 exe 走，换版本后不会还指向旧目录
             StartupAuto.EnsurePath();
@@ -129,14 +134,43 @@ namespace OpenTabletDriver.Slim
             Refresh();
         }
 
+        /// <summary>窗口/托盘图标：优先读随包的 data\tray.ico，读不到就用 exe 里嵌的那份。</summary>
+        internal static WindowIcon? AppIcon()
+        {
+            try
+            {
+                var path = System.IO.Path.Combine(AppContext.BaseDirectory, "data", "tray.ico");
+                if (System.IO.File.Exists(path))
+                    return new WindowIcon(path);
+            }
+            catch
+            {
+                // 文件坏了就退回内嵌图标
+            }
+
+            try
+            {
+                using var stream = typeof(MainWindow).Assembly.GetManifestResourceStream("app.ico");
+                if (stream != null)
+                    return new WindowIcon(stream);
+            }
+            catch
+            {
+                // 没有内嵌资源就交给系统默认图标
+            }
+
+            return null;
+        }
+
         private void CreateTray()
         {
             try
             {
                 var icon = System.IO.Path.Combine(AppContext.BaseDirectory, "data", "tray.ico");
                 _tray = new TrayIcon { ToolTipText = "OTD Slim", IsVisible = true };
-                if (System.IO.File.Exists(icon))
-                    _tray.Icon = new WindowIcon(icon);
+                var windowIcon = AppIcon();
+                if (windowIcon != null)
+                    _tray.Icon = windowIcon;
 
                 var open = new NativeMenuItem("打开面板");
                 open.Click += (_, _) => ShowFromTray();
