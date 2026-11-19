@@ -57,6 +57,7 @@ namespace OpenTabletDriver.Slim
 
             Content = BuildShell();
             ShowPage(Program.StartupPage ?? "输入");
+            EnsureTrayIconPromoted();
             CreateTray();
 
             _host.StateChanged += () => Dispatcher.UIThread.Post(Refresh);
@@ -134,6 +135,47 @@ namespace OpenTabletDriver.Slim
             Refresh();
         }
 
+        /// <summary>
+        /// Win11 默认把新出现的托盘图标塞进"隐藏的图标"里（任务栏上一个空位，看不到图）。
+        /// 系统在第一次注册托盘项后会在 HKCU\Control Panel\NotifyIconSettings 下按 exe 路径建一条记录，
+        /// 把 IsPromoted 置 1 就是"显示在任务栏上"。这里每次启动都补一刀，省得用户自己去翻设置。
+        /// </summary>
+        private static void EnsureTrayIconPromoted()
+        {
+            if (!OperatingSystem.IsWindows())
+                return;
+
+            try
+            {
+                var exe = Environment.ProcessPath;
+                if (exe == null)
+                    return;
+
+                using var settings = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                    @"Control Panel\NotifyIconSettings", writable: true);
+                if (settings == null)
+                    return;
+
+                foreach (var name in settings.GetSubKeyNames())
+                {
+                    using var entry = settings.OpenSubKey(name, writable: true);
+                    var path = entry?.GetValue("ExecutablePath") as string;
+                    if (path == null || !string.Equals(path, exe, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var promoted = entry!.GetValue("IsPromoted");
+                    if (promoted is int value && value == 1)
+                        continue;
+
+                    entry.SetValue("IsPromoted", 1, Microsoft.Win32.RegistryValueKind.DWord);
+                }
+            }
+            catch
+            {
+                // 注册表动不了就算了，图标顶多落在"隐藏的图标"里
+            }
+        }
+
         /// <summary>窗口/托盘图标：优先读随包的 data\tray.ico，读不到就用 exe 里嵌的那份。</summary>
         internal static WindowIcon? AppIcon()
         {
@@ -166,9 +208,11 @@ namespace OpenTabletDriver.Slim
         {
             try
             {
-                var icon = System.IO.Path.Combine(AppContext.BaseDirectory, "data", "tray.ico");
-                _tray = new TrayIcon { ToolTipText = "OTD Slim", IsVisible = true };
+                // 图标要在 IsVisible 之前给：Windows 是先 Add 一次托盘项再改图标，
+                // 顺序反过来会出现"托盘有个空位但看不见图"的情况
                 var windowIcon = AppIcon();
+
+                _tray = new TrayIcon { ToolTipText = "OTD Slim" };
                 if (windowIcon != null)
                     _tray.Icon = windowIcon;
 
@@ -182,11 +226,23 @@ namespace OpenTabletDriver.Slim
                 menu.Add(new NativeMenuItemSeparator());
                 menu.Add(quit);
                 _tray.Menu = menu;
+
+                _tray.IsVisible = true;
             }
-            catch
+            catch (Exception ex)
             {
-                // 托盘建不出来不影响主功能，只是点 X 之后没法再唤回窗口
+                // 托盘建不出来不影响主功能，只是点 X 之后没法再唤回窗口；
+                // 把原因留在 data\tray.log 里，省得下次又只能猜
                 _tray = null;
+                try
+                {
+                    var log = System.IO.Path.Combine(AppContext.BaseDirectory, "data", "tray.log");
+                    System.IO.File.WriteAllText(log, DateTime.Now + " " + ex);
+                }
+                catch
+                {
+                    // 连日志都写不出来就算了
+                }
             }
         }
 
