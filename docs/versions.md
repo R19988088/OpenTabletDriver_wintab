@@ -210,3 +210,31 @@ git -C "E:\000 app\OpenTabletDriver\_archive" checkout v33
 ```
 
 当前现场：exe `D4635874ECB5CC3F`（46,957,132 字节），shim `3BC7C21E15`。
+### 7.10 SAI 下笔不认映射区域、定位仍按双屏（2026-11-19）
+
+现象：映射设成单显示器，PS 正常；SAI 光标跟着笔走，但下笔落点还是按双屏的尺寸铺开，
+等于完全无视映射区域。光标和落点分家，说明两者取的位置来源不同。
+
+原因：
+- 光标是我们用 `SendInput` 注入的，走 OTD 的映射区域，所以对；
+- 笔画位置是 SAI 自己从 Wintab 包里算的。以前的包发的是**数位板原始单位**
+  （`WintabPointer.SetTabletPosition(raw)`，故意的），SAI 再拿它启动时从 `WTI_DDCTXS`
+  读到的 `lcSysExt` 去缩放。于是：
+  1. 映射区域只影响光标，完全不影响包 ⇒ 区域设置对 SAI 无效；
+  2. SAI 启动后不会重新读 `lcSysExt`。开着双屏启动、再拔掉一块，它仍按 7680 缩，
+     落点自然是双屏的尺寸。
+
+改法（坐标空间搬进共享内存，shim 负责回算）：
+- 主程序把**映射区域里的屏幕像素**发布进环形缓冲（`WintabPointer.ScreenSpace`，默认开，
+  `data\screencoords.txt` 写 0/raw 可退回设备单位）；
+- 共享内存头部 `version` 字段的最高位当标志（布局不变），shim 读到就把像素换算回设备单位；
+- shim 在 `WTOpen` 时记住这个客户端带来的 `lcSysExt`，序列化时按它回算：
+  `p = 屏幕像素 × 设备尺寸 ÷ 客户端 lcSysExt`，客户端再乘回去正好落在同一个像素上。
+  所以客户端缓存的是旧的双屏矩形也能画对，不用重开程序；
+- `WTOpen space:` 日志会打出 `client_sys_ext` / `current_screen` / `screen_px`，
+  下次再出问题先看这一行。
+
+验证：共享内存头 `version=0x80000001`（最高位=屏幕像素模式），心跳和 writeIndex 只在
+笔动的时候才更新，所以静止时读到 0 是正常的。
+
+当前版本：exe `A63FCAEAEA`（46,961,416 字节），shim x64 `0C8EC0EB48`、x86 `8D860CCF5C`。

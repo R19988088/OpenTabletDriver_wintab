@@ -17,6 +17,16 @@ namespace OpenTabletDriver.Wintab
         private readonly IAbsolutePointer native;
         private WintabSharedBuffer? buffer;
 
+        /// <summary>
+        /// 环形缓冲里的坐标是"映射区域里的屏幕像素"还是数位板自己的单位。
+        /// 必须在建立共享内存之前设置（shim 从头部 version 的最高位读它）。
+        /// </summary>
+        public static bool ScreenSpace
+        {
+            get => WintabSharedBuffer.ScreenSpace;
+            set => WintabSharedBuffer.ScreenSpace = value;
+        }
+
         private int screenX;
         private int screenY;
         private uint pressure;

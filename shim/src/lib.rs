@@ -600,6 +600,13 @@ struct Context {
     /// Options the application asked for; `CXO_SYSTEM` means this context owns
     /// the system cursor and must inject real mouse buttons.
     options: u32,
+    /// The lcSysExt this application believes in. Applications read it once,
+    /// from WTI_DDCTXS at startup, and never refresh it; after a monitor is
+    /// unplugged SAI keeps mapping packets through the old, wider rectangle and
+    /// paints outside the screen. Storing the value makes it possible to undo
+    /// that stale scaling at serialization time.
+    sys_ext: [i32; 2],
+    sys_org: [i32; 2],
     pen: PenState,
     queue: Vec<QueuedPacket>,
     read: usize,
@@ -776,6 +783,31 @@ fn device_extent() -> (i32, i32) {
 
 fn packet_y(pen_y: i32) -> i32 {
     device_extent().1.saturating_sub(pen_y)
+}
+
+/// X coordinate for one packet. With `space.screen_px` the value already is a
+/// screen pixel inside the configured mapping region; the application will
+/// multiply it by (its cached) lcSysExt / digitizer extent, so divide that
+/// factor back out and the result lands on the same pixel.
+fn packet_x(x: i32, space: PacketSpace) -> i32 {
+    if !space.screen_px || space.sys_ext[0] <= 0 {
+        return x;
+    }
+    let (dev_w, _) = device_extent();
+    ((x as i64 * dev_w as i64) / space.sys_ext[0] as i64).clamp(0, dev_w as i64) as i32
+}
+
+/// Y is the same conversion plus the bottom-up flip Wintab expects: the plugin
+/// works in top-down screen pixels, the packet has to carry the distance from
+/// the bottom of the *virtual desktop*.
+fn packet_y_space(y: i32, space: PacketSpace) -> i32 {
+    if !space.screen_px || space.sys_ext[1] <= 0 {
+        return packet_y(y);
+    }
+    let (_, dev_h) = device_extent();
+    let desktop_bottom = screen_origin()[1] + screen_extent()[1];
+    let bottom_up = (desktop_bottom - y) as i64;
+    ((bottom_up * dev_h as i64) / space.sys_ext[1] as i64).clamp(0, dev_h as i64) as i32
 }
 
 /// The desktop an application maps through lcSysExt/lcSysOrg. A hardware
@@ -1456,7 +1488,16 @@ fn inject_system_buttons(old: u32, new: u32) {
     }
 }
 
-fn open_context(packet_data: u32, packet_mode: u32, enable: bool, hwnd: usize, msg_base: u32, options: u32) -> *mut c_void {
+fn open_context(
+    packet_data: u32,
+    packet_mode: u32,
+    enable: bool,
+    hwnd: usize,
+    msg_base: u32,
+    options: u32,
+    sys_org: [i32; 2],
+    sys_ext: [i32; 2],
+) -> *mut c_void {
     let mask = if packet_data == 0 { default_mask() } else { packet_data };
     let (width, slots) = packet_layout(mask);
     let pressure_at = slots
@@ -1466,6 +1507,17 @@ fn open_context(packet_data: u32, packet_mode: u32, enable: bool, hwnd: usize, m
     diag(&format!(
         "WTOpen pkt_data=0x{:X} pkt_mode=0x{:X} options=0x{:X} enable={} hwnd=0x{:X} msg_base=0x{:X} width={} pressure_at={:?} build={}",
         mask, packet_mode, options, enable, hwnd, msg_base, width, pressure_at, SHIM_BUILD
+    ));
+
+    // Applications read lcSysExt once, at startup, and never refresh it. Logging
+    // the value they brought tells us whether a wrong stroke position comes from
+    // a stale rectangle (dual screen cached, single screen now) or from our own
+    // conversion.
+    let current = screen_extent();
+    diag(&format!(
+        "WTOpen space: client_sys_ext={}x{} current_screen={}x{} client_sys_org=({},{}) screen_org=({},{}) screen_px={}",
+        sys_ext[0], sys_ext[1], current[0], current[1],
+        sys_org[0], sys_org[1], screen_origin()[0], screen_origin()[1], screen_space()
     ));
     let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     let handle = reg.next;
@@ -1480,6 +1532,8 @@ fn open_context(packet_data: u32, packet_mode: u32, enable: bool, hwnd: usize, m
     reg.slots[handle] = Some(Context {
         packet_data: mask,
         packet_mode,
+        sys_ext,
+        sys_org,
         pen,
         queue: Vec::with_capacity(64),
         read: 0,
@@ -1819,7 +1873,34 @@ fn zero_xy() -> bool {
     CACHE.load(Ordering::Relaxed) != 0
 }
 
-fn serialize(mask: u32, pen: &PenState, context: usize, packet_mode: u32) -> Vec<u8> {
+/// Coordinate space a single packet has to be encoded in.
+///
+/// `screen_px` means the plugin handed us pixels of the *configured mapping
+/// region* instead of the digitizer's own units (flag: bit 31 of the shared
+/// header's version field). The application still divides by the lcSysExt it
+/// cached when it opened its context, so the pixels have to be converted back
+/// into units that make that division land on the same screen pixel.
+#[derive(Clone, Copy)]
+struct PacketSpace {
+    screen_px: bool,
+    sys_ext: [i32; 2],
+    sys_org: [i32; 2],
+}
+
+impl PacketSpace {
+    fn device_units(self) -> PacketSpace {
+        PacketSpace { screen_px: false, ..self }
+    }
+}
+
+fn screen_space() -> bool {
+    match shared() {
+        Some(state) => (unsafe { ptr::read_volatile(&state.version) } & 0x8000_0000) != 0,
+        None => false,
+    }
+}
+
+fn serialize(mask: u32, pen: &PenState, context: usize, packet_mode: u32, space: PacketSpace) -> Vec<u8> {
     let (width, slots) = packet_layout(mask);
     let mut buf = vec![0u8; width.max(4)];
     let pressure = if force_pressure() { MAX_PRESSURE } else { scale_pressure(pen.pressure) };
@@ -1862,8 +1943,8 @@ fn serialize(mask: u32, pen: &PenState, context: usize, packet_mode: u32) -> Vec
             PK_SERIAL_NUMBER => put_u32(&mut buf, at, pen.serial),
             PK_CURSOR => put_u32(&mut buf, at, PEN_CURSOR_INDEX),
             PK_BUTTONS => put_u32(&mut buf, at, pen.buttons_for_mode(packet_mode)),
-            PK_X => put_i32(&mut buf, at, if zero_xy() { 0 } else { pen.x }),
-            PK_Y => put_i32(&mut buf, at, if zero_xy() { 0 } else { packet_y(pen.y) }),
+            PK_X => put_i32(&mut buf, at, if zero_xy() { 0 } else { packet_x(pen.x, space) }),
+            PK_Y => put_i32(&mut buf, at, if zero_xy() { 0 } else { packet_y_space(pen.y, space) }),
             PK_Z => put_i32(&mut buf, at, 0),
             PK_NORMAL_PRESSURE => put_u32(&mut buf, at, pressure),
             PK_TANGENT_PRESSURE => put_u32(&mut buf, at, tangent_pressure),
@@ -2007,7 +2088,7 @@ fn poll_shared_all(context: &mut Context, context_handle: usize) -> bool {
         if experiment("silent") {
             continue;
         }
-        let mut bytes = serialize(context.packet_data, &context.pen, context_handle, context.packet_mode);
+        let mut bytes = serialize(context.packet_data, &context.pen, context_handle, context.packet_mode, PacketSpace { screen_px: screen_space(), sys_ext: context.sys_ext, sys_org: context.sys_org });
         // Experiment: an application that reports no pressure may be reading it
         // from a different slot than the declared layout. Duplicate the value
         // into the following 4-byte slots so a mismatch becomes visible.
@@ -2146,7 +2227,7 @@ fn refresh(context: &mut Context, context_handle: usize) -> bool {
         // Report the pen leaving range even when no new samples arrived.
         context.pen.last_reported_in_range = context.pen.in_range;
         context.pen.serial = context.pen.serial.wrapping_add(1);
-        let packet = serialize(context.packet_data, &context.pen, context_handle, context.packet_mode);
+        let packet = serialize(context.packet_data, &context.pen, context_handle, context.packet_mode, PacketSpace { screen_px: screen_space(), sys_ext: context.sys_ext, sys_org: context.sys_org });
         context.queue.push(QueuedPacket {
             serial: context.pen.serial,
             bytes: packet,
@@ -2760,7 +2841,16 @@ pub unsafe extern "system" fn WTOpenA(
     } else {
         unsafe { ptr::read_unaligned(input) }
     };
-    open_context(ctx.pkt_data, ctx.pkt_mode, enable != 0, hwnd as usize, ctx.msg_base, ctx.options)
+    open_context(
+        ctx.pkt_data,
+        ctx.pkt_mode,
+        enable != 0,
+        hwnd as usize,
+        ctx.msg_base,
+        ctx.options,
+        [ctx.sys_org[0], ctx.sys_org[1]],
+        [ctx.sys_ext[0], ctx.sys_ext[1]],
+    )
 }
 
 #[no_mangle]
@@ -2775,7 +2865,16 @@ pub unsafe extern "system" fn WTOpenW(
     } else {
         unsafe { ptr::read_unaligned(input) }
     };
-    open_context(ctx.pkt_data, ctx.pkt_mode, enable != 0, hwnd as usize, ctx.msg_base, ctx.options)
+    open_context(
+        ctx.pkt_data,
+        ctx.pkt_mode,
+        enable != 0,
+        hwnd as usize,
+        ctx.msg_base,
+        ctx.options,
+        [ctx.sys_org[0], ctx.sys_org[1]],
+        [ctx.sys_ext[0], ctx.sys_ext[1]],
+    )
 }
 
 #[no_mangle]
@@ -2823,7 +2922,16 @@ pub unsafe extern "system" fn WTRestore(
     _input: *mut c_void,
     enable: i32,
 ) -> *mut c_void {
-    open_context(default_mask(), TPS_NONE, enable != 0, _hwnd as usize, 0x7FF0, CXO_SYSTEM)
+    open_context(
+        default_mask(),
+        TPS_NONE,
+        enable != 0,
+        _hwnd as usize,
+        0x7FF0,
+        CXO_SYSTEM,
+        screen_origin(),
+        screen_extent(),
+    )
 }
 
 #[no_mangle]
@@ -3165,7 +3273,16 @@ pub unsafe extern "system" fn WTQueuePacketsEx(
 
 #[no_mangle]
 pub unsafe extern "system" fn WTMgrOpen(_hwnd: HWND, _base: u32) -> *mut c_void {
-    open_context(default_mask(), TPS_NONE, true, 0, 0x7FF0, CXO_SYSTEM)
+    open_context(
+        default_mask(),
+        TPS_NONE,
+        true,
+        0,
+        0x7FF0,
+        CXO_SYSTEM,
+        screen_origin(),
+        screen_extent(),
+    )
 }
 
 #[no_mangle]
@@ -3175,7 +3292,16 @@ pub unsafe extern "system" fn WTMgrClose(handle: *mut c_void) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn WTMgrDefContext(_manager: *mut c_void, _system: i32) -> *mut c_void {
-    open_context(default_mask(), TPS_NONE, true, 0, 0x7FF0, CXO_SYSTEM)
+    open_context(
+        default_mask(),
+        TPS_NONE,
+        true,
+        0,
+        0x7FF0,
+        CXO_SYSTEM,
+        screen_origin(),
+        screen_extent(),
+    )
 }
 
 #[no_mangle]
@@ -3184,7 +3310,16 @@ pub unsafe extern "system" fn WTMgrDefContextEx(
     _device: u32,
     _system: i32,
 ) -> *mut c_void {
-    open_context(default_mask(), TPS_NONE, true, 0, 0x7FF0, CXO_SYSTEM)
+    open_context(
+        default_mask(),
+        TPS_NONE,
+        true,
+        0,
+        0x7FF0,
+        CXO_SYSTEM,
+        screen_origin(),
+        screen_extent(),
+    )
 }
 
 #[cfg(test)]
@@ -3281,7 +3416,7 @@ mod tests {
         pen.buttons = 2;
         pen.latched_buttons = 2;
 
-        let packet = serialize(mask, &pen, 0x99, 0);
+        let packet = serialize(mask, &pen, 0x99, 0, PacketSpace { screen_px: false, sys_ext: [0, 0], sys_org: [0, 0] });
         let u = |at: usize| u32::from_le_bytes(packet[at..at + 4].try_into().unwrap());
 
         assert_eq!(packet.len(), 32);

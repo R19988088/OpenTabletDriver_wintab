@@ -30,6 +30,16 @@ namespace OpenTabletDriver.Wintab
         private const long HeightOffset = 20;
         private const long MaxPressureOffset = 24;
 
+        /// <summary>
+        /// 环形缓冲里的 X/Y 是不是"已映射到屏幕像素"。
+        /// 这件事必须让 shim 知道：它按客户端的 lcSysExt 把像素换算回设备单位，
+        /// 否则 SAI 这类把包当成设备单位的应用会按错误的系数再缩一遍。
+        /// 标志借用 version 字段的最高位，结构布局不变。
+        /// </summary>
+        private const uint ScreenSpaceFlag = 0x8000_0000u;
+
+        public static bool ScreenSpace { get; set; } = true;
+
         public WintabSharedBuffer(int width, int height, uint maxPressure)
         {
             try
@@ -49,7 +59,7 @@ namespace OpenTabletDriver.Wintab
                 view = file.CreateViewAccessor(0, size);
 
                 view.Write(0, Magic);
-                view.Write(4, 1u);
+                view.Write(4, ScreenSpace ? (1u | ScreenSpaceFlag) : 1u);
                 view.Write(EnabledOffset, 1u);
                 view.Write(WidthOffset, width);
                 view.Write(HeightOffset, height);

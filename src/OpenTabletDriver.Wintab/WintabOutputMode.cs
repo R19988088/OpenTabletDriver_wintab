@@ -157,7 +157,14 @@ namespace OpenTabletDriver.Wintab
             var rawPosition = report.Position;
             var transformed = base.Transform(report);
             if (transformed != null)
-                ResolvedPointer()?.SetTabletPosition(rawPosition);
+            {
+                // ScreenSpace 模式下发布的是"映射区域里的屏幕像素"：位置和光标走同一条
+                // 管线，应用（SAI）就只能画到光标所在的位置，区域设置也就生效了。
+                // shim 再按客户端缓存的 lcSysExt 把它换算回设备单位。
+                var published = WintabPointer.ScreenSpace ? transformed.Position : rawPosition;
+                ResolvedPointer()?.SetTabletPosition(published);
+            }
+
             return transformed;
         }
 

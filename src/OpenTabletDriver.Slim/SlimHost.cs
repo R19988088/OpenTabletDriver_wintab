@@ -98,6 +98,31 @@ namespace OpenTabletDriver.Slim
         });
 
         /// <summary>
+        /// 默认把映射区域里的屏幕像素发给 Wintab；现场要回退成设备单位时，
+        /// 在 data 目录放一个 screencoords.txt 写 0（或 raw）。
+        /// </summary>
+        private static bool ScreenSpaceEnabled()
+        {
+            try
+            {
+                var path = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "OTDWintab",
+                    "screencoords.txt");
+
+                if (!File.Exists(path))
+                    return true;
+
+                var text = File.ReadAllText(path).Trim().ToLowerInvariant();
+                return text is not ("0" or "off" or "raw" or "device");
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        /// <summary>
         /// 把第一个检测到的数位板接到 Wintab 输出模式上。
         ///
         /// 除了绝对定位和笔压，还必须挂上按键管线（PenButtonPipeline）：
@@ -112,6 +137,8 @@ namespace OpenTabletDriver.Slim
         {
             try
             {
+                // 坐标空间开关要在建共享内存之前定下来（shim 读的是它的最高位）
+                OpenTabletDriver.Wintab.WintabPointer.ScreenSpace = ScreenSpaceEnabled();
                 var tree = _driver.InputDevices.FirstOrDefault();
                 if (tree == null)
                 {
