@@ -15,6 +15,10 @@ namespace OpenTabletDriver.Slim
         [STAThread]
         public static void Main(string[] args)
         {
+            // 崩溃/退出留痕：以前进程消失时既没有事件日志也没有日志尾巴，
+            // 分不清是用户关的、被别的实例顶掉的还是一次性崩掉。
+            InstallCrashLogging();
+
             // 重启交接：等上一个实例彻底退出（它占着数位板）
             var waitArg = args.FirstOrDefault(a => a.StartsWith("--wait-pid=", StringComparison.Ordinal));
             if (waitArg != null && int.TryParse(waitArg["--wait-pid=".Length..], out var waitPid))
@@ -218,6 +222,46 @@ namespace OpenTabletDriver.Slim
             var path = Path.Join(AppContext.BaseDirectory, fileName);
             File.WriteAllText(path, report);
             Console.WriteLine(report);
+        }
+
+        /// <summary>
+        /// 进程消失得不明不白时（09:44 那次既没有事件日志也没有日志尾巴），
+        /// 至少能留下是谁、什么异常、什么时候。日志写在 data 目录，跟 app-*.log 一起看。
+        /// </summary>
+        private static void InstallCrashLogging()
+        {
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            {
+                var ex = e.ExceptionObject as Exception;
+                Trace("crash", $"unhandled terminating={e.IsTerminating}{Environment.NewLine}{ex}");
+            };
+
+            System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) =>
+            {
+                Trace("task", e.Exception.ToString());
+                e.SetObserved();
+            };
+
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => Trace("exit", "process exit");
+        }
+
+        private static void Trace(string kind, string message)
+        {
+            try
+            {
+                var dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "OTDWintab");
+                Directory.CreateDirectory(dir);
+                var path = Path.Join(dir, $"crash-{Environment.ProcessId}.log");
+                File.AppendAllText(
+                    path,
+                    $"{DateTime.Now:HH:mm:ss.fff} [{kind}] pid={Environment.ProcessId}{Environment.NewLine}{message}{Environment.NewLine}");
+            }
+            catch
+            {
+                // 连日志都写不进去就算了，不能让它再把进程带崩
+            }
         }
     }
 }
