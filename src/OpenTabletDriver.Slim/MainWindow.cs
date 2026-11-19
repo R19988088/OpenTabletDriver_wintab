@@ -61,15 +61,15 @@ namespace OpenTabletDriver.Slim
 
             _host.StateChanged += () => Dispatcher.UIThread.Post(Refresh);
 
-            Activated += (_, _) => WindowTheme.UseLightTitleBar(PlatformHandle());
+            Activated += (_, _) => WindowTheme.ApplyTitleBar(PlatformHandle());
 
             Opened += async (_, _) =>
             {
                 // 标题栏颜色要在窗口真正显示后设一次，Avalonia 应用主题时可能在 Created 阶段改回去，
                 // 所以再挂一个延迟回调补一刀。
-                WindowTheme.UseLightTitleBar(PlatformHandle());
+                WindowTheme.ApplyTitleBar(PlatformHandle());
                 Avalonia.Threading.DispatcherTimer.RunOnce(
-                    () => WindowTheme.UseLightTitleBar(PlatformHandle()),
+                    () => WindowTheme.ApplyTitleBar(PlatformHandle()),
                     TimeSpan.FromMilliseconds(250));
 
                 // 旧版 OTD 的自启项会和这套驱动打架，检测到就清掉
