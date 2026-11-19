@@ -27,12 +27,8 @@ namespace OpenTabletDriver.Slim
         private readonly DragValueField _strokeFilter = new() { Min = 1, Max = 16 };
         private readonly CalibrationPad _pad = new();
         private readonly TextBlock _peakLabel = new();
-        private readonly ModePill _winTab = new("WinTab");
-        private readonly ModePill _windowsInk = new("Windows Ink");
 
         private readonly SlimHost _host;
-        private readonly ModePill _buttonsLeft = new("按键在左");
-        private readonly ModePill _buttonsRight = new("按键在右");
 
         private readonly TextBlock _touchStatus = new();
         private readonly TextBlock _wacomStatus = new();
@@ -50,24 +46,9 @@ namespace OpenTabletDriver.Slim
             ColumnDefinitions = new ColumnDefinitions("*,Auto");
             Margin = new Thickness(0);
 
-            Row("数位板输入模式", 0);
-            var modePanel = PillPair(_winTab, _windowsInk);
-            modePanel.Margin = new Thickness(0, 6, 0, 6);
-            SetRow(modePanel, 0);
-            SetColumn(modePanel, 1);
-            Children.Add(modePanel);
-
             AddFieldRow("压力死区", _deadZone, 1);
             AddFieldRow("弹性", _elasticity, 2);
             AddFieldRow("笔触稳定", _strokeFilter, 3);
-
-            // 按键在左 / 按键在右：ExpressKey 在哪一侧（右侧 = 输入区域整体转 180°）
-            Row("按键位置", 4);
-            var buttonPanel = PillPair(_buttonsLeft, _buttonsRight);
-            buttonPanel.Margin = new Thickness(0, 6, 0, 6);
-            SetRow(buttonPanel, 4);
-            SetColumn(buttonPanel, 1);
-            Children.Add(buttonPanel);
 
             var calHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
             calHeader.Children.Add(new TextBlock
@@ -182,8 +163,8 @@ namespace OpenTabletDriver.Slim
 
         private void WireEvents()
         {
-            _winTab.Clicked += () => SetMode("winTab");
-            _windowsInk.Clicked += () => SetMode("winInk");
+
+
 
             _deadZone.ValueChanged += value =>
             {
@@ -203,8 +184,8 @@ namespace OpenTabletDriver.Slim
                 _config.Save();
             };
 
-            _buttonsLeft.Clicked += () => SetButtonsOnRight(false);
-            _buttonsRight.Clicked += () => SetButtonsOnRight(true);
+
+
 
             _pad.PeakRecorded += value =>
             {
@@ -219,39 +200,11 @@ namespace OpenTabletDriver.Slim
             _deadZone.Value = (int)Math.Round(_config.DeadZone * 100);
             _elasticity.Value = (int)Math.Round(_config.Elasticity * 10);
             _strokeFilter.Value = _config.StrokeFilter;
-            UpdateMode(_config.InputMode);
-            UpdateButtons();
+
+
             UpdatePeakLabel();
         }
 
-        private void SetMode(string mode)
-        {
-            _config.InputMode = mode;
-            _config.Save();
-            UpdateMode(mode);
-        }
-
-        private void SetButtonsOnRight(bool onRight)
-        {
-            _host.Mapping.ButtonsOnRight = onRight;
-            _host.Mapping.Save();
-            _host.ApplyMapping();
-            UpdateButtons();
-        }
-
-        private void UpdateButtons()
-        {
-            var onRight = _host.Mapping.ButtonsOnRight;
-            _buttonsLeft.IsOn = !onRight;
-            _buttonsRight.IsOn = onRight;
-        }
-
-        private void UpdateMode(string mode)
-        {
-            var winTab = mode == "winTab";
-            _winTab.IsOn = winTab;
-            _windowsInk.IsOn = !winTab;
-        }
 
         private void UpdatePeakLabel() =>
             _peakLabel.Text = $"保留峰值 {_config.MaxPressure * 100:0.0}%";
