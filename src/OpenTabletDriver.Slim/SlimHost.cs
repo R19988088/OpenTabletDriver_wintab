@@ -188,6 +188,7 @@ namespace OpenTabletDriver.Slim
                 _outputMode = mode;
                 ApplyMapping();
                 StartDisplayWatch();
+                StartRebindWatch();
 
                 OutputState = native is WindowsPointer pointer
                     ? $"运行中 · 屏幕 {pointer.ScreenSize.X:0}x{pointer.ScreenSize.Y:0} · 数位板 {Mapping.TabletWidth:0.#}x{Mapping.TabletHeight:0.#}mm"
@@ -231,6 +232,89 @@ namespace OpenTabletDriver.Slim
         public string ButtonState => _buttons == null
             ? "按键：未接线"
             : $"按键：按下 {_buttons.PressCount} / 抬起 {_buttons.ReleaseCount} · 报文 {_buttons.ReportCount} · 峰值压力 {_buttons.MaxPressure}";
+
+        private System.Threading.Timer? _rebindWatch;
+        private long _lastRebindMs;
+        private readonly object _rebindSync = new();
+        private volatile bool _rebinding;
+
+        /// <summary>
+        /// 拔插数位板后程序不会自己回来：设备被拔掉时 Driver 把设备树丢掉，
+        /// 但没有人再调一次 Detect，插回来就一直是"没有可用数位板"，只能重启。
+        /// 这里每 2 秒看一次：没有设备就重试绑定（3 秒一次），设备回来了但输出没接上就接上。
+        /// </summary>
+        public void StartRebindWatch()
+        {
+            _rebindWatch ??= new System.Threading.Timer(_ => Rebind(false), null, 1000, 2000);
+        }
+
+        /// <summary>
+        /// 重新枚举并重新接上输出。force=true 时忽略节流，界面上的"重新检测"用它。
+        /// </summary>
+        public string Rebind(bool force)
+        {
+            if (_rebinding)
+                return OutputState;
+
+            var now = Environment.TickCount64;
+            if (!force && now - _lastRebindMs < 3000)
+                return OutputState;
+
+            if (!System.Threading.Monitor.TryEnter(_rebindSync))
+                return OutputState;
+
+            try
+            {
+                if (!force && _driver.InputDevices.Length > 0 && _outputMode != null)
+                    return OutputState;
+
+                _rebinding = true;
+                _lastRebindMs = now;
+                Log.Write(nameof(SlimHost), "重新绑定数位板…", LogLevel.Info);
+
+                try
+                {
+                    _outputMode?.Dispose();
+                }
+                catch
+                {
+                    // 旧模式可能已经随设备一起被释放了
+                }
+
+                _outputMode = null;
+                _buttons = null;
+
+                var detected = _driver.Detect();
+                var endpoints = _driver.CompositeDeviceHub.GetDevices().ToArray();
+                DeviceCount = endpoints.Length;
+                Devices = endpoints.Select(Describe).ToArray();
+                TabletName = _driver.Tablets.FirstOrDefault()?.Properties.Name ?? "未检测到";
+
+                if (!detected)
+                {
+                    OutputState = "没有可用数位板，等它插回来";
+                    Log.Write(nameof(SlimHost), OutputState, LogLevel.Warning);
+                    StateChanged?.Invoke();
+                    return OutputState;
+                }
+
+                var state = StartOutput();
+                StateChanged?.Invoke();
+                return state;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception(ex);
+                OutputState = $"重新绑定失败：{ex.Message}";
+                StateChanged?.Invoke();
+                return OutputState;
+            }
+            finally
+            {
+                _rebinding = false;
+                System.Threading.Monitor.Exit(_rebindSync);
+            }
+        }
 
         /// <summary>
         /// 显示器热插拔不能只刷新界面文字，三样东西都得跟着重算：
@@ -577,6 +661,8 @@ namespace OpenTabletDriver.Slim
             Log.Output -= OnLogMessage;
             _displayWatch?.Dispose();
             _displayWatch = null;
+            _rebindWatch?.Dispose();
+            _rebindWatch = null;
             _outputMode?.Dispose();
             _driver.Dispose();
             _services.Dispose();
