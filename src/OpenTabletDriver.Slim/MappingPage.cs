@@ -72,7 +72,7 @@ namespace OpenTabletDriver.Slim
                 Commit();
             }));
 
-            SetRow(buttons, 5);
+            SetRow(buttons, 4);
             SetColumnSpan(buttons, 2);
             Children.Add(buttons);
 
@@ -103,7 +103,7 @@ namespace OpenTabletDriver.Slim
             buttonRow.Children.Add(_buttonsLeft);
             buttonRow.Children.Add(_buttonsRight);
 
-            SetRow(buttonRow, 4);
+            SetRow(buttonRow, 5);
             SetColumnSpan(buttonRow, 2);
             Children.Add(buttonRow);
 
