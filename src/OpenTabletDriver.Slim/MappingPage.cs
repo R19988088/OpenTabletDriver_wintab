@@ -77,13 +77,11 @@ namespace OpenTabletDriver.Slim
             Children.Add(buttons);
 
             // 按键在左 / 按键在右：ExpressKey 在哪一侧（右侧 = 绘制区域整体转 180°）
-            // 和下面「锁定比例 / 铺满该显示器」排在一起、同一个居中轴，别单独右对齐
-            var buttonRow = new StackPanel
+            // 排成标准设置行：标签贴左边（和「数位板区域」标题同一条竖线），胶囊贴右边画布边缘
+            var buttonRow = new Grid
             {
-                Orientation = Orientation.Horizontal,
-                Spacing = 10,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 10)
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                Margin = new Thickness(0, 26, 0, 0)
             };
 
             buttonRow.Children.Add(new TextBlock
@@ -91,17 +89,29 @@ namespace OpenTabletDriver.Slim
                 Text = "按键位置",
                 FontSize = 14,
                 Foreground = Palette.InkBrush,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 6, 0)
+                VerticalAlignment = VerticalAlignment.Center
             });
+
+            var buttonPair = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,8,*"),
+                Width = 250,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
 
             foreach (var pill in new[] { _buttonsLeft, _buttonsRight })
             {
-                pill.HorizontalAlignment = HorizontalAlignment.Center;
+                pill.MinWidth = 0;
+                pill.HorizontalAlignment = HorizontalAlignment.Stretch;
+                pill.Margin = new Thickness(0);
             }
 
-            buttonRow.Children.Add(_buttonsLeft);
-            buttonRow.Children.Add(_buttonsRight);
+            buttonPair.Children.Add(_buttonsLeft);
+            Grid.SetColumn(_buttonsRight, 2);
+            buttonPair.Children.Add(_buttonsRight);
+            Grid.SetColumn(buttonPair, 1);
+            buttonRow.Children.Add(buttonPair);
 
             SetRow(buttonRow, 5);
             SetColumnSpan(buttonRow, 2);
