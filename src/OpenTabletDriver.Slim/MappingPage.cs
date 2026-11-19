@@ -57,7 +57,8 @@ namespace OpenTabletDriver.Slim
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 8,
-                HorizontalAlignment = HorizontalAlignment.Center
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 0)
             };
             buttons.Children.Add(_lockRatio);
             buttons.Children.Add(MakeTextButton("铺满该显示器", () =>
@@ -76,10 +77,13 @@ namespace OpenTabletDriver.Slim
             Children.Add(buttons);
 
             // 按键在左 / 按键在右：ExpressKey 在哪一侧（右侧 = 绘制区域整体转 180°）
-            var buttonRow = new Grid
+            // 和下面「锁定比例 / 铺满该显示器」排在一起、同一个居中轴，别单独右对齐
+            var buttonRow = new StackPanel
             {
-                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                Margin = new Thickness(0, 4, 0, 0)
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 10)
             };
 
             buttonRow.Children.Add(new TextBlock
@@ -87,29 +91,17 @@ namespace OpenTabletDriver.Slim
                 Text = "按键位置",
                 FontSize = 14,
                 Foreground = Palette.InkBrush,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-
-            var buttonPair = new Grid
-            {
-                ColumnDefinitions = new ColumnDefinitions("*,8,*"),
-                Width = 250,
                 VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
+                Margin = new Thickness(0, 0, 6, 0)
+            });
 
             foreach (var pill in new[] { _buttonsLeft, _buttonsRight })
             {
-                pill.MinWidth = 0;
-                pill.HorizontalAlignment = HorizontalAlignment.Stretch;
-                pill.Margin = new Thickness(0);
+                pill.HorizontalAlignment = HorizontalAlignment.Center;
             }
 
-            buttonPair.Children.Add(_buttonsLeft);
-            Grid.SetColumn(_buttonsRight, 2);
-            buttonPair.Children.Add(_buttonsRight);
-            Grid.SetColumn(buttonPair, 1);
-            buttonRow.Children.Add(buttonPair);
+            buttonRow.Children.Add(_buttonsLeft);
+            buttonRow.Children.Add(_buttonsRight);
 
             SetRow(buttonRow, 4);
             SetColumnSpan(buttonRow, 2);
