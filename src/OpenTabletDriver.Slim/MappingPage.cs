@@ -23,8 +23,8 @@ namespace OpenTabletDriver.Slim
         private readonly AreaEditor _displayEditor = new(allowRotation: false) { Height = 260 };
         private readonly AreaEditor _tabletEditor = new(allowRotation: false) { Height = 200 };
         private readonly ModePill _lockRatio = new("锁定比例");
-        private readonly ModePill _buttonsLeft = new("按键在左");
-        private readonly ModePill _buttonsRight = new("按键在右");
+
+
 
         private IReadOnlyList<Displays.Info> _displays = [];
         private bool _loading;
@@ -76,46 +76,7 @@ namespace OpenTabletDriver.Slim
             SetColumnSpan(buttons, 2);
             Children.Add(buttons);
 
-            // 按键在左 / 按键在右：ExpressKey 在哪一侧（右侧 = 绘制区域整体转 180°）
-            // 排成标准设置行：标签贴左边（和「数位板区域」标题同一条竖线），胶囊贴右边画布边缘
-            var buttonRow = new Grid
-            {
-                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                Margin = new Thickness(0, 26, 0, 0)
-            };
 
-            buttonRow.Children.Add(new TextBlock
-            {
-                Text = "按键位置",
-                FontSize = 14,
-                Foreground = Palette.InkBrush,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-
-            var buttonPair = new Grid
-            {
-                ColumnDefinitions = new ColumnDefinitions("*,8,*"),
-                Width = 250,
-                VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
-
-            foreach (var pill in new[] { _buttonsLeft, _buttonsRight })
-            {
-                pill.MinWidth = 0;
-                pill.HorizontalAlignment = HorizontalAlignment.Stretch;
-                pill.Margin = new Thickness(0);
-            }
-
-            buttonPair.Children.Add(_buttonsLeft);
-            Grid.SetColumn(_buttonsRight, 2);
-            buttonPair.Children.Add(_buttonsRight);
-            Grid.SetColumn(buttonPair, 1);
-            buttonRow.Children.Add(buttonPair);
-
-            SetRow(buttonRow, 5);
-            SetColumnSpan(buttonRow, 2);
-            Children.Add(buttonRow);
 
 
 
@@ -143,8 +104,8 @@ namespace OpenTabletDriver.Slim
 
         private void WireEvents()
         {
-            _buttonsLeft.Clicked += () => SetButtonsOnRight(false);
-            _buttonsRight.Clicked += () => SetButtonsOnRight(true);
+
+
 
             _displayEditor.Changed += () =>
             {
@@ -201,13 +162,6 @@ namespace OpenTabletDriver.Slim
             };
         }
 
-        private void SetButtonsOnRight(bool onRight)
-        {
-            _config.ButtonsOnRight = onRight;
-            _config.Save();
-            _host.ApplyMapping();
-            UpdatePills();
-        }
 
         private (double X, double Y, double W, double H) DesktopBounds()
         {
@@ -297,8 +251,7 @@ namespace OpenTabletDriver.Slim
         private void UpdatePills()
         {
             _lockRatio.IsOn = _config.LockAspectRatio;
-            _buttonsLeft.IsOn = !_config.ButtonsOnRight;
-            _buttonsRight.IsOn = _config.ButtonsOnRight;
+
         }
 
         private void Commit()

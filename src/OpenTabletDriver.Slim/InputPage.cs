@@ -26,6 +26,8 @@ namespace OpenTabletDriver.Slim
         private readonly DragValueField _elasticity = new() { Min = 1, Max = 100 };
         private readonly DragValueField _strokeFilter = new() { Min = 1, Max = 16 };
         private readonly CalibrationPad _pad = new();
+        private readonly ModePill _buttonsLeft = new("按键在左");
+        private readonly ModePill _buttonsRight = new("按键在右");
         private readonly TextBlock _peakLabel = new();
 
         private readonly SlimHost _host;
@@ -49,6 +51,14 @@ namespace OpenTabletDriver.Slim
             AddFieldRow("压力死区", _deadZone, 1);
             AddFieldRow("弹性", _elasticity, 2);
             AddFieldRow("笔触稳定", _strokeFilter, 3);
+
+            // 按键在左 / 按键在右：ExpressKey 在哪一侧（右侧 = 映射区域整体转 180°）
+            Row("按键位置", 4);
+            var buttonPanel = PillPair(_buttonsLeft, _buttonsRight);
+            buttonPanel.Margin = new Thickness(0, 6, 0, 6);
+            SetRow(buttonPanel, 4);
+            SetColumn(buttonPanel, 1);
+            Children.Add(buttonPanel);
 
             var calHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
             calHeader.Children.Add(new TextBlock
@@ -132,8 +142,8 @@ namespace OpenTabletDriver.Slim
 
         private void WireEvents()
         {
-
-
+            _buttonsLeft.Clicked += () => SetButtonsOnRight(false);
+            _buttonsRight.Clicked += () => SetButtonsOnRight(true);
 
             _deadZone.ValueChanged += value =>
             {
@@ -170,8 +180,23 @@ namespace OpenTabletDriver.Slim
             _elasticity.Value = (int)Math.Round(_config.Elasticity * 10);
             _strokeFilter.Value = _config.StrokeFilter;
 
-
+            UpdateButtons();
             UpdatePeakLabel();
+        }
+
+        private void SetButtonsOnRight(bool onRight)
+        {
+            _host.Mapping.ButtonsOnRight = onRight;
+            _host.Mapping.Save();
+            _host.ApplyMapping();
+            UpdateButtons();
+        }
+
+        private void UpdateButtons()
+        {
+            var onRight = _host.Mapping.ButtonsOnRight;
+            _buttonsLeft.IsOn = !onRight;
+            _buttonsRight.IsOn = onRight;
         }
 
 

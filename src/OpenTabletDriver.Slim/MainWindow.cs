@@ -199,9 +199,9 @@ namespace OpenTabletDriver.Slim
             _nav.Spacing = 2;
             _nav.Margin = new Thickness(12, 14, 12, 0);
 
-            foreach (var name in new[] { "输入", "绘制区域", "按键", "附加", "设备", "关于" })
+            foreach (var name in new[] { "输入", "区域映射", "按键", "附加", "设备", "关于" })
             {
-                var item = NavItem(name, name is "输入" or "绘制区域" or "按键" or "附加");
+                var item = NavItem(name, name is "输入" or "区域映射" or "按键" or "附加");
                 _navItems[name] = item;
                 _nav.Children.Add(item);
             }
@@ -363,7 +363,7 @@ namespace OpenTabletDriver.Slim
 
             foreach (var pair in _navItems)
             {
-                var enabled = pair.Key is "输入" or "绘制区域" or "按键" or "附加";
+                var enabled = pair.Key is "输入" or "区域映射" or "按键" or "附加";
                 var selected = pair.Key == name;
                 pair.Value.Background = selected ? Palette.SelectedBrush : Brushes.Transparent;
 
@@ -387,7 +387,8 @@ namespace OpenTabletDriver.Slim
             {
                 "输入" => new InputPage(_host),
                 "压力" => new InputPage(_host), // 旧参数别名，内容与「输入」页相同
-                "绘制区域" => new MappingPage(_host),
+                "区域映射" => new MappingPage(_host),
+                "绘制区域" => new MappingPage(_host), // 旧名字保留
                 "映射" => new MappingPage(_host), // 旧参数别名
                 "按键" => new ButtonsPage(_host),
                 "附加" => new TweaksPage(),
