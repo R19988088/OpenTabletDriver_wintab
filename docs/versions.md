@@ -158,3 +158,24 @@ git -C "E:\000 app\OpenTabletDriver\_archive" checkout v33
 4. 今天试过并已排除的组合（在**新版**基线上均无效）：NPBUTTON=1+marks{0,1}+0 曲线（→ 恒定满压）、NPBUTTON=1+marks全0（→ 完全不读）、NPBUTTON=1+marks{0,1}+满量程曲线（→ 读成 0）、NPBUTTON=1+marks{0,1}+0..255 曲线（→ 恒定满压）、NPBUTTON=0+marks{0,1}+满量程曲线（→ 无压力）。**根因是 `2b513fd` 引入的 LOGCONTEXT 默认值，不是这三张表。**
 
 
+
+### 7.8 多显示器：虚拟桌面 + 热插拔识别（2026-11-19）
+
+- `lcSysExt` / `lcSysOrg` 从 `SM_CXSCREEN`（只认主屏）改成**所有显示器矩形的并集**（虚拟桌面），
+  副屏在左边时原点为负值。SAI 这类通过 `lcSysExt` 映射的应用才能覆盖到第二块屏。
+- 识别：`EnumDisplayMonitors` + `GetMonitorInfoW`，拓扑变化时写一行
+  `DISPLAY monitors=N desktop=WxH origin=(x,y) | [i] \\.\DISPLAYn WxH at (x,y) primary`。
+- 自动刷新：通知线程每 1 秒重新测量（只有变化才写日志），`WTOpen` 时也重新测量，
+  所以插拔屏幕不需要重启 PS/SAI。
+- 面板状态：`WintabSetup` 的随包哈希原来是一次性 `Lazy` 缓存，换了 `WintabNative\Wintab32.dll`
+  之后界面会一直停在「版本不是本程序的」直到重启程序；改成按文件身份（路径+修改时间+大小）缓存，
+  每秒刷新就会自己变回「已安装」。
+
+**发布踩坑（必须记住）**：`dotnet publish` 只加 `EnableCompressionInSingleFile=true` 时，
+`libSkiaSharp.dll` / `libHarfBuzzSharp.dll` 会留在 exe 外面，单文件拷到别处启动直接
+`System.TypeInitializationException: SkiaSharp.SKImageInfo … DllNotFoundException`（0xe0434352）。
+单文件必须同时带 `IncludeNativeLibrariesForSelfExtract=true`：
+`dotnet publish src\OpenTabletDriver.Slim\OpenTabletDriver.Slim.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o dist`
+（46,940,767 字节，目录里的两个 `.pdb` 是符号，发布后删掉。）
+
+当前现场：exe `592AE8F6140B6391`，shim `3BC7C21E15`（x64）/ `98686D88A5`（x86）。

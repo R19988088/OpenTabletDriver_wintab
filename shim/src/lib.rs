@@ -778,14 +778,209 @@ fn packet_y(pen_y: i32) -> i32 {
     device_extent().1.saturating_sub(pen_y)
 }
 
-fn screen_extent() -> [i32; 2] {
-    let w = unsafe { GetSystemMetrics(0) };
-    let h = unsafe { GetSystemMetrics(1) };
-    if w > 0 && h > 0 {
-        [w, h]
-    } else {
-        [0, 0]
+/// The desktop an application maps through lcSysExt/lcSysOrg. A hardware
+/// driver reports the *virtual desktop*, not the primary monitor: with a second
+/// screen attached the session desktop is wider and can start left of the
+/// primary, and PaintTool SAI maps every packet through this rectangle.
+///
+/// Measured from the monitor topology (union of every monitor's rectangle)
+/// instead of SM_CXSCREEN, cached, and re-measured while an application is
+/// open - plugging a screen in has to be picked up without restarting the app.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+struct DisplayRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[repr(C)]
+struct MonitorInfoExW {
+    cb_size: u32,
+    rc_monitor: DisplayRect,
+    rc_work: DisplayRect,
+    flags: u32,
+    device: [u16; 32],
+}
+
+const MONITORINFOF_PRIMARY: u32 = 1;
+
+type MonitorEnumProc =
+    unsafe extern "system" fn(*mut c_void, *mut c_void, *const DisplayRect, *mut c_void) -> i32;
+
+extern "system" {
+    fn EnumDisplayMonitors(
+        hdc: *mut c_void,
+        clip: *const DisplayRect,
+        callback: MonitorEnumProc,
+        data: *mut c_void,
+    ) -> i32;
+    fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MonitorInfoExW) -> i32;
+}
+
+/// One enumerated monitor, kept for the log so the detected layout is named.
+struct MonitorSnapshot {
+    rect: DisplayRect,
+    primary: bool,
+    name: [u16; 32],
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DisplayState {
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+    count: u32,
+}
+
+static DISPLAY: Mutex<Option<DisplayState>> = Mutex::new(None);
+
+unsafe extern "system" fn collect_monitor(
+    monitor: *mut c_void,
+    _hdc: *mut c_void,
+    _rect: *const DisplayRect,
+    data: *mut c_void,
+) -> i32 {
+    let list = &mut *(data as *mut Vec<MonitorSnapshot>);
+    let mut info = MonitorInfoExW {
+        cb_size: std::mem::size_of::<MonitorInfoExW>() as u32,
+        rc_monitor: DisplayRect::default(),
+        rc_work: DisplayRect::default(),
+        flags: 0,
+        device: [0; 32],
+    };
+    if !monitor.is_null() && GetMonitorInfoW(monitor, &mut info) != 0 {
+        list.push(MonitorSnapshot {
+            rect: info.rc_monitor,
+            primary: info.flags & MONITORINFOF_PRIMARY != 0,
+            name: info.device,
+        });
     }
+    1
+}
+
+fn monitor_snapshots() -> Vec<MonitorSnapshot> {
+    let mut list: Vec<MonitorSnapshot> = Vec::new();
+    unsafe {
+        EnumDisplayMonitors(
+            ptr::null_mut(),
+            ptr::null(),
+            collect_monitor,
+            &mut list as *mut Vec<MonitorSnapshot> as *mut c_void,
+        );
+    }
+    list
+}
+
+fn display_name(name: &[u16; 32]) -> String {
+    let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    String::from_utf16_lossy(&name[..len])
+}
+
+/// Union of every monitor rectangle; falls back to the primary screen when the
+/// enumeration comes back empty (driver restart during a mode change).
+fn measure_display() -> (DisplayState, Vec<MonitorSnapshot>) {
+    let monitors = monitor_snapshots();
+    if monitors.is_empty() {
+        let w = unsafe { GetSystemMetrics(0) };
+        let h = unsafe { GetSystemMetrics(1) };
+        let (w, h) = if w > 0 && h > 0 { (w, h) } else { (1920, 1080) };
+        return (
+            DisplayState {
+                left: 0,
+                top: 0,
+                width: w,
+                height: h,
+                count: 1,
+            },
+            monitors,
+        );
+    }
+
+    let mut left = i32::MAX;
+    let mut top = i32::MAX;
+    let mut right = i32::MIN;
+    let mut bottom = i32::MIN;
+    for monitor in &monitors {
+        left = left.min(monitor.rect.left);
+        top = top.min(monitor.rect.top);
+        right = right.max(monitor.rect.right);
+        bottom = bottom.max(monitor.rect.bottom);
+    }
+
+    (
+        DisplayState {
+            left,
+            top,
+            width: (right - left).max(1),
+            height: (bottom - top).max(1),
+            count: monitors.len() as u32,
+        },
+        monitors,
+    )
+}
+
+/// Re-measures the desktop, and when the topology changed logs what was found:
+/// monitor count, the virtual desktop rectangle, and each screen by device name,
+/// resolution, position and primary flag. Returns true when it changed.
+fn refresh_display() -> bool {
+    let (next, monitors) = measure_display();
+    let previous = {
+        let mut slot = DISPLAY.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = *slot;
+        *slot = Some(next);
+        previous
+    };
+
+    if previous == Some(next) {
+        return false;
+    }
+
+    let mut line = format!(
+        "DISPLAY monitors={} desktop={}x{} origin=({},{})",
+        next.count, next.width, next.height, next.left, next.top
+    );
+    for (index, monitor) in monitors.iter().enumerate() {
+        line.push_str(&format!(
+            " | [{}] {} {}x{} at ({},{}){}",
+            index,
+            display_name(&monitor.name),
+            monitor.rect.right - monitor.rect.left,
+            monitor.rect.bottom - monitor.rect.top,
+            monitor.rect.left,
+            monitor.rect.top,
+            if monitor.primary { " primary" } else { "" }
+        ));
+    }
+    diag(&line);
+    true
+}
+
+fn desktop_state() -> DisplayState {
+    if let Some(state) = *DISPLAY.lock().unwrap_or_else(|e| e.into_inner()) {
+        return state;
+    }
+
+    refresh_display();
+    (*DISPLAY.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or(DisplayState {
+        left: 0,
+        top: 0,
+        width: 1920,
+        height: 1080,
+        count: 1,
+    })
+}
+
+fn screen_extent() -> [i32; 2] {
+    let state = desktop_state();
+    [state.width, state.height]
+}
+
+fn screen_origin() -> [i32; 2] {
+    let state = desktop_state();
+    [state.left, state.top]
 }
 fn base_context_a() -> LogContextA {
     let (ext_x, ext_y) = device_extent();
@@ -808,7 +1003,7 @@ fn base_context_a() -> LogContextA {
         out_ext: [ext_x, ext_y, 1],
         sens: [0; 3],
         sys_mode: 0,
-        sys_org: [0; 2],
+        sys_org: screen_origin(),
         sys_ext: screen_extent(),
         sys_sens: [65536, 65536],
     };
@@ -838,7 +1033,7 @@ fn base_context_w() -> LogContextW {
         out_ext: [ext_x, ext_y, 1],
         sens: [0; 3],
         sys_mode: 0,
-        sys_org: [0; 2],
+        sys_org: screen_origin(),
         sys_ext: screen_extent(),
         sys_sens: [65536, 65536],
     };
@@ -1082,12 +1277,21 @@ fn start_notifier() {
     }
 
     std::thread::spawn(|| {
+        let mut display_check = unsafe { GetTickCount() };
         loop {
             // 4 ms is 250 Hz: one notifier tick for every packet a 200 Hz tablet
             // can produce. Polling at 2 ms only let the shim outrun the
             // application and pile messages on its queue.
             std::thread::sleep(std::time::Duration::from_millis(4));
             let now = unsafe { GetTickCount() };
+
+            // A screen plugged in or unplugged must be seen without restarting
+            // the painting application: re-measure the desktop once a second,
+            // atomically enough that new contexts read the new rectangle.
+            if now.wrapping_sub(display_check) >= 1000 {
+                display_check = now;
+                refresh_display();
+            }
             let targets: Vec<Notif> = {
                 let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
                 let mut out = Vec::new();
@@ -2550,6 +2754,7 @@ pub unsafe extern "system" fn WTOpenA(
     input: *const LogContextA,
     enable: i32,
 ) -> *mut c_void {
+    refresh_display();
     let ctx = if input.is_null() {
         base_context_a()
     } else {
@@ -2564,6 +2769,7 @@ pub unsafe extern "system" fn WTOpenW(
     input: *const LogContextW,
     enable: i32,
 ) -> *mut c_void {
+    refresh_display();
     let ctx = if input.is_null() {
         base_context_w()
     } else {

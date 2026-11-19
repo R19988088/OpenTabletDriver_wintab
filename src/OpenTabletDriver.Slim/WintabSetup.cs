@@ -104,7 +104,7 @@ namespace OpenTabletDriver.Slim
             try
             {
                 // 光看大小不准（重新编译过大小可能撞上），直接比内容哈希
-                return Hash(installed) == PackageHash.Value ? WintabState.Ours : WintabState.Outdated;
+                return Hash(installed) == PackageHash() ? WintabState.Ours : WintabState.Outdated;
             }
             catch
             {
@@ -112,21 +112,50 @@ namespace OpenTabletDriver.Slim
             }
         }
 
-        private static readonly Lazy<string> PackageHash = new(() =>
+        // 随包那份的哈希不能只算一次：换 shim 的时候直接替换 WintabNative\Wintab32.dll，
+        // 面板每秒刷新就该立刻跟着变“已安装”，而不是一直挂着“版本不是本程序的”，
+        // 非要重启程序才消失。所以缓存带文件身份（路径 + 修改时间 + 大小）。
+        private static readonly object PackageLock = new();
+        private static string _packageKey = string.Empty;
+        private static string _packageHash = string.Empty;
+
+        private static string PackageHash()
         {
+            var path = LocalDll;
+            var key = path;
+
             try
             {
-                if (File.Exists(LocalDll))
-                    return Hash(LocalDll);
+                var info = new FileInfo(path);
+                if (info.Exists)
+                    key = $"{path}|{info.LastWriteTimeUtc.Ticks}|{info.Length}";
             }
             catch
             {
-                // 落到内嵌资源
+                // 读不到属性就退回只用路径做键
             }
 
-            var payload = Payload();
-            return payload == null ? string.Empty : HashBytes(payload);
-        }, true);
+            lock (PackageLock)
+            {
+                if (key == _packageKey && _packageHash.Length != 0)
+                    return _packageHash;
+
+                string hash;
+                if (File.Exists(path))
+                {
+                    hash = Hash(path);
+                }
+                else
+                {
+                    var payload = Payload();
+                    hash = payload == null ? string.Empty : HashBytes(payload);
+                }
+
+                _packageKey = key;
+                _packageHash = hash;
+                return hash;
+            }
+        }
 
         private static string HashBytes(byte[] bytes)
         {
@@ -165,7 +194,7 @@ namespace OpenTabletDriver.Slim
             // 先直接拷一次：程序本身是管理员运行时，这一步就能过，不用弹 UAC
             try
             {
-                File.Copy(LocalDll, SystemDll, true);
+                ReplaceWithRename(LocalDll, SystemDll);
                 if (Detect() == WintabState.Ours)
                     return (true, "已安装到 System32");
             }
@@ -173,13 +202,60 @@ namespace OpenTabletDriver.Slim
             {
                 // 没权限，走提权
             }
-            catch (IOException io)
+            catch (IOException)
             {
-                // DLL 可能正被别的程序占用，提权也未必能过，但先如实报出来
-                return (false, $"写入 System32 失败：{io.Message}");
+                // 改名也过不去（文件被独占），交给提权流程再试一次
             }
 
             return InstallElevated();
+        }
+
+        /// <summary>
+        /// System32 里那份被 Photoshop / SAI / ProCraft 加载着时，直接覆盖必然报
+        /// “being used by another process”。Windows 允许给已加载的 DLL 改名（映像文件
+        /// 带 FILE_SHARE_DELETE），所以先把它挪成 .old，再写新文件：正在跑的程序继续用
+        /// 旧映像，新启动的程序加载到新版本，不用关软件也不用重启。
+        /// </summary>
+        private static void ReplaceWithRename(string source, string target)
+        {
+            try
+            {
+                File.Copy(source, target, true);
+                return;
+            }
+            catch (IOException)
+            {
+                // 被占用，走改名
+            }
+
+            if (File.Exists(target))
+            {
+                var backup = target + ".old";
+                try
+                {
+                    File.Move(target, backup, true);
+                }
+                catch
+                {
+                    // 连改名都失败：删掉上次的备份再试一次
+                    try { File.Delete(backup); } catch { }
+                    File.Move(target, backup, true);
+                }
+
+                try
+                {
+                    File.Copy(source, target, true);
+                }
+                catch
+                {
+                    // 复制没成，别把系统留成“没有 Wintab”的状态，改回去再抛出
+                    try { if (!File.Exists(target)) File.Move(backup, target); } catch { }
+                    throw;
+                }
+                return;
+            }
+
+            File.Copy(source, target, true);
         }
 
         private static (bool Ok, string Message) InstallElevated()
@@ -191,12 +267,24 @@ namespace OpenTabletDriver.Slim
             var target = SystemDll.Replace("'", "''");
             var logPath = log.Replace("'", "''");
 
-            // 失败原因写进临时文件，提权进程关了也能读回来
+            // 失败原因写进临时文件，提权进程关了也能读回来。
+            // 先改名再复制：DLL 正被 Photoshop / SAI / ProCraft 加载时，直接覆盖会被
+            // “being used by another process” 挡住，而改名不会被挡。
             var script = $@"try {{
+                if (Test-Path -LiteralPath '{target}') {{
+                    $bak = '{target}.old'
+                    if (Test-Path -LiteralPath $bak) {{ Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue }}
+                    Move-Item -LiteralPath '{target}' -Destination $bak -Force -ErrorAction Stop
+                }}
                 Copy-Item -LiteralPath '{source}' -Destination '{target}' -Force -ErrorAction Stop
                 'OK' | Out-File -LiteralPath '{logPath}' -Encoding utf8 -Force
             }} catch {{
                 $_.Exception.Message | Out-File -LiteralPath '{logPath}' -Encoding utf8 -Force
+                try {{
+                    if (-not (Test-Path -LiteralPath '{target}') -and (Test-Path -LiteralPath ('{target}' + '.old'))) {{
+                        Move-Item -LiteralPath ('{target}' + '.old') -Destination '{target}' -Force -ErrorAction SilentlyContinue
+                    }}
+                }} catch {{ }}
                 exit 1
             }}";
 
